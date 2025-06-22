@@ -1,0 +1,151 @@
+[project]
+name = "mcp-os-server"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Spark-Liang", email = "369453502@qq.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "asyncio>=3.4.3",
+    "click>=8.1.7",
+    "flask>=3.1.0",
+    "loguru>=0.7.3",
+    "mcp>=1.8.1",
+    "pydantic>=2.10.3",
+]
+
+[project.scripts]
+mcp-os-server = "mcp_os_server.main:main"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-env>=1.1.0",
+    "pytest-cov>=6.0.0",
+    "pytest-mock>=3.12.0",
+    "pytest-timeout>=2.4.0",
+]
+dev = [
+    "ruff>=0.0.262",
+    "black>=23.3.0",
+    "isort>=5.12.0",
+    "mypy>=1.2.0",
+    "pre-commit>=3.2.2",
+    "nuitka>=2.7.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+# 设置每个测试用例的默认超时时间为 10 秒
+timeout = 10
+asyncio_mode = "strict"
+testpaths = "tests"
+# Set default event loop scope for async tests 
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "macos: marks tests that should only run on macOS",
+    "slow: marks tests as slow running",
+]
+filterwarnings = [
+    "ignore::RuntimeWarning:selectors:",
+    "ignore::pytest.PytestUnhandledCoroutineWarning:",
+    "ignore::pytest.PytestUnraisableExceptionWarning:",
+    "ignore::DeprecationWarning:pytest_asyncio.plugin:",
+]
+
+[tool.ruff]
+lint.select = [
+    "E",  # pycodestyle errors
+    "F",  # pyflakes
+    "W",  # pycodestyle warnings
+    "I",  # isort
+    "C",  # flake8-comprehensions
+    "B",  # flake8-bugbear
+]
+lint.ignore = [
+    "E501",  # line too long, handled by black
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+]
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
+
+[tool.isort]
+profile = "black" 
+line_length = 88
+
+[tool.hatch.version]
+path = "src/mcp_os_server/version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_os_server"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+# 定义全局命令映射
+[tool.hatch.envs.default.scripts]
+test = "hatch -e test run test"
+format = "hatch -e dev run format"
+lint = "hatch -e dev run lint"
+typecheck = "hatch -e dev run typecheck"
+coverage = "hatch -e test run coverage"
+check = "hatch -e dev run check"
+fix = "hatch -e dev run fix"
+all = "hatch -e dev run all"
+
+[tool.hatch.envs.test]
+features = ["test"]
+
+[tool.hatch.envs.test.scripts]
+test = "pytest {args:tests/}"
+coverage = "pytest --cov=src/mcp_os_server tests"
+
+[tool.hatch.envs.dev]
+features = ["dev"]
+
+[tool.hatch.envs.dev.scripts]
+format-black = "black ."
+format-isort = "isort ."
+format-ruff = "ruff check --fix ."
+format = ["format-black", "format-isort", "format-ruff"]
+lint-black = "black --check ."
+lint-isort = "isort --check ."
+lint-ruff = "ruff check ."
+lint = ["lint-black", "lint-isort", "lint-ruff"]
+typecheck = "mypy src/mcp_os_server tests"
+check = ["lint", "typecheck"]
+fix = ["check", "format"]
+all = ["format", "check", "coverage"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "pass",
+    "raise ImportError",
+    "__version__",
+    "except IOError:",
+    "except IOError as e:",
+    "def _cleanup_handles",
+    "def __aexit__",
+    "if path in [\">\", \">>\", \"<\"]:",
+    "def _close_handles",
+]
+
+omit = [
+    "src/mcp_os_server/__init__.py",
+    "src/mcp_os_server/version.py",
+]
+
+

@@ -1,0 +1,42 @@
+---
+description: package and dependency mangenement
+globs: 
+alwaysApply: true
+---
+# **Project Development Standards (Strict Enforcement)**
+
+You **MUST** adhere *strictly* to the following standards for this project:
+
+**1. Dependency Management & `pyproject.toml` Interaction:**
+   * **Tool:** Use `uv` exclusively for managing Python packages and the virtual environment.
+   * **Configuration File:** `pyproject.toml` is the single source of truth for dependencies.
+   * **Modification Constraint (CRITICAL - NON-NEGOTIABLE):**
+      * **DO NOT EVER** manually edit the `[project.dependencies]`, `[project.optional-dependencies]`, tool-specific dependency tables (like `[tool.uv.sources]`), or any other package dependency sections within `pyproject.toml`.
+      * **ALL** changes to dependencies (adding, removing, updating versions) **MUST** be performed *exclusively* through `uv` commands (e.g., `uv add`, `uv remove`). These commands correctly handle updating `pyproject.toml`. Manual edits WILL break consistency.
+   * **Adding Dependencies:**
+      * **Command:** `uv --project <project_root_dir> add <library_name>`
+      * **Command:** `uv --project <project_root_dir> add --dev <library_name>`
+   * **Syncing Environment:** Use `uv --project <project_root_dir> sync` to install/update packages in the environment based *only* on the lock file (`uv.lock`, if present) or `pyproject.toml`.
+   * **Locking Dependencies:** Use `uv --project <project_root_dir> lock` to generate/update the `uv.lock` file.
+   * **Forbidden:**
+      * **DO NOT** use `pip` (e.g., `pip install`, `pip freeze`).
+      * **DO NOT** create, modify, or use `requirements.txt` files.
+
+**2. Command Execution & Mandatory Project Context:**
+   * **Mandatory Argument (CRITICAL):** **EVERY SINGLE** `uv` command you execute (`add`, `remove`, `sync`, `run`, `lock`, `pip install`, `pip uninstall`, etc.) **MUST** include the `--project <project_root_dir>` argument to explicitly define the project scope. **There are no exceptions.**
+   * **`<project_root_dir>` Definition:** `<project_root_dir>` **MUST** be the path (absolute or relative from your *initial* working directory, but absolute is often safer for agents) to the directory that contains the project's primary `pyproject.toml` file. You are responsible for determining and using the correct path for this argument in *every* `uv` command.
+   * **Execution Example:** `uv --project /path/to/your/project run python src/app/main.py --config config.yaml`
+   * **Dependency Example:** `uv --project /path/to/your/project add requests`
+   * **Sync Example:** `uv --project /path/to/your/project sync`
+   * **Testing Example:** `uv --project /path/to/your/project run pytest tests/`
+
+**3. Working Directory (Context via --project):**
+   * **Context Handling:** The mandatory `--project <project_root_dir>` argument **replaces** the need to rely on the current working directory for `uv` commands. It ensures commands operate on the correct project regardless of where they are invoked from.
+   * **Forbidden:** **DO NOT** use `cd`, `chdir`, or any other command to change the current working directory *for the purpose of running `uv` commands*. The `--project` flag makes this obsolete and error-prone. If scripts require relative paths *within* the project, specify them relative to the `<project_root_dir>` (e.g., referencing `src/data/file.csv` within a script run via `uv --project ... run python ...`).
+
+**4. Testing Framework:**
+   * **Tool:** Use `pytest` for writing and running all tests.
+   * **Running Tests Command:** `uv --project <project_root_dir> run pytest [pytest arguments...]` (e.g., `uv --project . run pytest -k "test_specific_feature"`)
+   * **Forbidden:** **DO NOT** use the `unittest` standard library module or any other testing framework.
+
+**Rationale:** These extremely strict rules are essential for maintaining project integrity, preventing environment corruption caused by incorrect context or manual `pyproject.toml` edits, ensuring reproducible dependency management via `uv`, and leveraging `uv`'s explicit project scoping feature (`--project`). Adherence is mandatory.
