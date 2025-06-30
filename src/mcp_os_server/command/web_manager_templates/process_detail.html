@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Command Server - 进程详情</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 20px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            border-bottom: 2px solid #e9ecef;
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            color: #7f8c8d;
+            margin-bottom: 20px;
+        }
+        .nav-links {
+            margin-bottom: 20px;
+        }
+        .nav-links a {
+            color: #007bff;
+            text-decoration: none;
+            margin-right: 20px;
+        }
+        .nav-links a:hover {
+            text-decoration: underline;
+        }
+        .info-section {
+            background-color: #f8f9fa;
+            padding: 20px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            border: 1px solid #e9ecef;
+        }
+        .info-section h3 {
+            margin-top: 0;
+            color: #495057;
+            border-bottom: 1px solid #dee2e6;
+            padding-bottom: 10px;
+        }
+        .info-grid {
+            display: grid;
+            grid-template-columns: 200px 1fr;
+            gap: 10px 20px;
+            margin-bottom: 15px;
+        }
+        .info-label {
+            font-weight: 600;
+            color: #495057;
+        }
+        .info-value {
+            word-break: break-all;
+        }
+        .status-running {
+            color: #28a745;
+            font-weight: bold;
+        }
+        .status-completed {
+            color: #007bff;
+        }
+        .status-failed, .status-error {
+            color: #dc3545;
+        }
+        .status-terminated {
+            color: #fd7e14;
+        }
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            text-decoration: none;
+            display: inline-block;
+            margin-right: 10px;
+            margin-bottom: 10px;
+            transition: background-color 0.2s;
+        }
+        .btn-primary {
+            background-color: #007bff;
+            color: white;
+        }
+        .btn-primary:hover {
+            background-color: #0056b3;
+        }
+        .btn-danger {
+            background-color: #dc3545;
+            color: white;
+        }
+        .btn-danger:hover {
+            background-color: #c82333;
+        }
+        .btn-warning {
+            background-color: #fd7e14;
+            color: white;
+        }
+        .btn-warning:hover {
+            background-color: #e8610e;
+        }
+        .btn-success {
+            background-color: #28a745;
+            color: white;
+        }
+        .btn-success:hover {
+            background-color: #218838;
+        }
+        .output-section {
+            margin-top: 30px;
+        }
+        .output-controls {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px 6px 0 0;
+            border: 1px solid #e9ecef;
+            border-bottom: none;
+        }
+        .output-controls label {
+            margin-right: 15px;
+            font-weight: 500;
+        }
+        .output-controls input, .output-controls select {
+            margin-right: 10px;
+            padding: 5px 8px;
+            border: 1px solid #ced4da;
+            border-radius: 3px;
+        }
+        .output-display {
+            background-color: #212529;
+            color: #f8f9fa;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 13px;
+            padding: 20px;
+            border-radius: 0 0 6px 6px;
+            border: 1px solid #e9ecef;
+            min-height: 300px;
+            max-height: 600px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .output-empty {
+            color: #6c757d;
+            font-style: italic;
+            text-align: center;
+            padding: 40px;
+        }
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #6c757d;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+            padding: 12px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        .command-display {
+            background-color: #e9ecef;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            word-break: break-all;
+        }
+        .labels {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+        }
+        .label {
+            background-color: #007bff;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="nav-links">
+                <a href="{{ url_prefix }}/">← 返回进程列表</a>
+                <a href="#" onclick="refreshDetails()">🔄 刷新</a>
+            </div>
+            <h1>进程详情</h1>
+            <p class="subtitle">进程ID: <span id="processId">{{ pid }}</span></p>
+        </div>
+
+        <div id="errorMessage" class="error" style="display: none;"></div>
+        <div id="loadingMessage" class="loading">正在加载进程详情...</div>
+
+        <div id="processDetails" style="display: none;">
+            <!-- 基本信息 -->
+            <div class="info-section">
+                <h3>基本信息</h3>
+                <div class="info-grid">
+                    <div class="info-label">进程ID:</div>
+                    <div class="info-value" id="detailPid">-</div>
+                    
+                    <div class="info-label">状态:</div>
+                    <div class="info-value" id="detailStatus">-</div>
+                    
+                    <div class="info-label">描述:</div>
+                    <div class="info-value" id="detailDescription">-</div>
+                    
+                    <div class="info-label">命令:</div>
+                    <div class="info-value">
+                        <div id="detailCommand" class="command-display">-</div>
+                    </div>
+                    
+                    <div class="info-label">工作目录:</div>
+                    <div class="info-value" id="detailDirectory">-</div>
+                    
+                    <div class="info-label">标签:</div>
+                    <div class="info-value">
+                        <div id="detailLabels" class="labels">-</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 时间信息 -->
+            <div class="info-section">
+                <h3>时间信息</h3>
+                <div class="info-grid">
+                    <div class="info-label">开始时间:</div>
+                    <div class="info-value" id="detailStartTime">-</div>
+                    
+                    <div class="info-label">结束时间:</div>
+                    <div class="info-value" id="detailEndTime">-</div>
+                    
+                    <div class="info-label">运行时长:</div>
+                    <div class="info-value" id="detailDuration">-</div>
+                    
+                    <div class="info-label">退出码:</div>
+                    <div class="info-value" id="detailExitCode">-</div>
+                    
+                    <div class="info-label">超时设置:</div>
+                    <div class="info-value" id="detailTimeout">-</div>
+                </div>
+            </div>
+
+            <!-- 控制操作 -->
+            <div class="info-section">
+                <h3>控制操作</h3>
+                <div id="processControls">
+                    <!-- 控制按钮将由JavaScript动态生成 -->
+                </div>
+            </div>
+
+            <!-- 输出查看 -->
+            <div class="output-section">
+                <h3>进程输出</h3>
+                <div class="output-controls">
+                    <label>
+                        <input type="checkbox" id="showStdout" checked> 显示标准输出
+                    </label>
+                    <label>
+                        <input type="checkbox" id="showStderr"> 显示错误输出
+                    </label>
+                    <label>
+                        行数限制: <input type="number" id="tailLines" value="100" min="1" max="1000" style="width: 80px;">
+                    </label>
+                    <button class="btn btn-primary" onclick="loadOutput()">刷新输出</button>
+                    <button class="btn btn-success" onclick="toggleAutoRefresh()">开启自动刷新</button>
+                </div>
+                <div id="outputDisplay" class="output-display">
+                    <div class="output-empty">点击"刷新输出"查看进程输出</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 保存URL前缀和进程ID
+        const urlPrefix = "{{ url_prefix }}";
+        const processId = "{{ pid }}";
+        let autoRefreshInterval = null;
+        let isAutoRefreshing = false;
+
+        // 页面加载完成后获取进程详情
+        document.addEventListener('DOMContentLoaded', function() {
+            loadProcessDetails();
+        });
+
+        // 刷新进程详情
+        function refreshDetails() {
+            loadProcessDetails();
+            if (document.getElementById('outputDisplay').textContent.trim() !== '点击"刷新输出"查看进程输出') {
+                loadOutput();
+            }
+        }
+
+        // 加载进程详情
+        function loadProcessDetails() {
+            hideError();
+            document.getElementById('loadingMessage').style.display = 'block';
+            document.getElementById('processDetails').style.display = 'none';
+
+            fetch(`${urlPrefix}/api/process/${processId}`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    displayProcessDetails(data);
+                })
+                .catch(error => {
+                    console.error('获取进程详情失败:', error);
+                    showError(`获取进程详情失败: ${error.message}`);
+                    document.getElementById('loadingMessage').style.display = 'none';
+                });
+        }
+
+        // 显示进程详情
+        function displayProcessDetails(process) {
+            document.getElementById('loadingMessage').style.display = 'none';
+            document.getElementById('processDetails').style.display = 'block';
+
+            // 基本信息
+            document.getElementById('detailPid').textContent = process.pid || '-';
+            
+            const statusElement = document.getElementById('detailStatus');
+            const statusValue = process.status || 'UNKNOWN';
+            statusElement.textContent = statusValue;
+            statusElement.className = 'info-value status-' + statusValue.toLowerCase();
+            
+            document.getElementById('detailDescription').textContent = process.description || '-';
+            
+            // 命令显示
+            let commandDisplay = '';
+            if (Array.isArray(process.command)) {
+                commandDisplay = process.command.join(' ');
+            } else {
+                commandDisplay = process.command || '-';
+            }
+            document.getElementById('detailCommand').textContent = commandDisplay;
+            
+            document.getElementById('detailDirectory').textContent = process.directory || '-';
+            
+            // 标签显示
+            const labelsContainer = document.getElementById('detailLabels');
+            if (process.labels && process.labels.length > 0) {
+                labelsContainer.innerHTML = '';
+                process.labels.forEach(label => {
+                    const labelElement = document.createElement('div');
+                    labelElement.className = 'label';
+                    labelElement.textContent = label;
+                    labelsContainer.appendChild(labelElement);
+                });
+            } else {
+                labelsContainer.innerHTML = '<span style="color: #6c757d; font-style: italic;">无标签</span>';
+            }
+
+            // 时间信息
+            document.getElementById('detailStartTime').textContent = formatDateTime(process.start_time) || '-';
+            document.getElementById('detailEndTime').textContent = formatDateTime(process.end_time) || '-';
+            
+            // 计算运行时长
+            if (process.start_time) {
+                const startTime = new Date(process.start_time);
+                const endTime = process.end_time ? new Date(process.end_time) : new Date();
+                const duration = Math.floor((endTime - startTime) / 1000); // 秒数
+                document.getElementById('detailDuration').textContent = formatDuration(duration);
+            } else {
+                document.getElementById('detailDuration').textContent = '-';
+            }
+            
+            document.getElementById('detailExitCode').textContent = 
+                process.exit_code !== null && process.exit_code !== undefined ? process.exit_code : '-';
+            document.getElementById('detailTimeout').textContent = 
+                process.timeout ? `${process.timeout}秒` : '无限制';
+
+            // 生成控制按钮
+            generateControlButtons(process);
+        }
+
+        // 生成控制按钮
+        function generateControlButtons(process) {
+            const controlsContainer = document.getElementById('processControls');
+            const status = process.status || '';
+            
+            let buttonsHtml = '';
+            
+            if (status.toLowerCase() === 'running') {
+                buttonsHtml += '<button class="btn btn-danger" onclick="stopProcess(false)">优雅停止</button>';
+                buttonsHtml += '<button class="btn btn-warning" onclick="stopProcess(true)">强制终止</button>';
+            } else {
+                buttonsHtml += '<button class="btn btn-primary" onclick="cleanProcess()">清理进程</button>';
+            }
+            
+            controlsContainer.innerHTML = buttonsHtml;
+        }
+
+        // 格式化时间显示
+        function formatDateTime(dateString) {
+            if (!dateString) return null;
+            
+            try {
+                const date = new Date(dateString);
+                if (isNaN(date.getTime())) return dateString;
+                
+                return date.toLocaleString('zh-CN', {
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                });
+            } catch (e) {
+                return dateString;
+            }
+        }
+
+        // 格式化时长显示
+        function formatDuration(seconds) {
+            if (seconds < 60) {
+                return `${seconds}秒`;
+            } else if (seconds < 3600) {
+                const minutes = Math.floor(seconds / 60);
+                const remainingSeconds = seconds % 60;
+                return `${minutes}分${remainingSeconds}秒`;
+            } else {
+                const hours = Math.floor(seconds / 3600);
+                const minutes = Math.floor((seconds % 3600) / 60);
+                const remainingSeconds = seconds % 60;
+                return `${hours}时${minutes}分${remainingSeconds}秒`;
+            }
+        }
+
+        // 停止进程
+        function stopProcess(force) {
+            const action = force ? '强制终止' : '优雅停止';
+            if (!confirm(`确定要${action}进程 ${processId} 吗？`)) {
+                return;
+            }
+
+            fetch(`${urlPrefix}/api/process/${processId}/stop`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ force: force })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert(`${action}失败: ${data.error}`);
+                } else {
+                    alert(`进程 ${processId} 已${action}`);
+                    loadProcessDetails(); // 刷新详情
+                }
+            })
+            .catch(error => {
+                console.error(`${action}失败:`, error);
+                alert(`${action}失败: ${error.message}`);
+            });
+        }
+
+        // 清理进程
+        function cleanProcess() {
+            if (!confirm(`确定要清理进程 ${processId} 吗？此操作将删除所有相关数据。`)) {
+                return;
+            }
+
+            fetch(`${urlPrefix}/api/process/${processId}/clean`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert(`清理进程失败: ${data.error}`);
+                } else {
+                    alert(`进程 ${processId} 已清理`);
+                    // 清理成功后返回列表页面
+                    window.location.href = `${urlPrefix}/`;
+                }
+            })
+            .catch(error => {
+                console.error('清理进程失败:', error);
+                alert(`清理进程失败: ${error.message}`);
+            });
+        }
+
+        // 加载输出
+        function loadOutput() {
+            const showStdout = document.getElementById('showStdout').checked;
+            const showStderr = document.getElementById('showStderr').checked;
+            const tailLines = parseInt(document.getElementById('tailLines').value) || 100;
+
+            if (!showStdout && !showStderr) {
+                document.getElementById('outputDisplay').innerHTML = 
+                    '<div class="output-empty">请至少选择一种输出类型</div>';
+                return;
+            }
+
+            const params = new URLSearchParams();
+            params.append('stdout', showStdout.toString());
+            params.append('stderr', showStderr.toString());
+            params.append('tail', tailLines.toString());
+
+            document.getElementById('outputDisplay').innerHTML = 
+                '<div class="loading">正在加载输出...</div>';
+
+            fetch(`${urlPrefix}/api/process/${processId}/output?${params.toString()}`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    displayOutput(data, showStdout, showStderr);
+                })
+                .catch(error => {
+                    console.error('获取输出失败:', error);
+                    document.getElementById('outputDisplay').innerHTML = 
+                        `<div class="error">获取输出失败: ${error.message}</div>`;
+                });
+        }
+
+        // 显示输出
+        function displayOutput(data, showStdout, showStderr) {
+            const outputDisplay = document.getElementById('outputDisplay');
+            let content = '';
+
+            if (showStdout && data.stdout && data.stdout.length > 0) {
+                content += '=== 标准输出 ===\n';
+                data.stdout.forEach(entry => {
+                    const timestamp = formatDateTime(entry.timestamp);
+                    content += `[${timestamp}] ${entry.text}\n`;
+                });
+                content += '\n';
+            }
+
+            if (showStderr && data.stderr && data.stderr.length > 0) {
+                content += '=== 错误输出 ===\n';
+                data.stderr.forEach(entry => {
+                    const timestamp = formatDateTime(entry.timestamp);
+                    content += `[${timestamp}] ${entry.text}\n`;
+                });
+                content += '\n';
+            }
+
+            if (!content.trim()) {
+                content = '暂无输出数据';
+            }
+
+            outputDisplay.textContent = content;
+            // 滚动到底部
+            outputDisplay.scrollTop = outputDisplay.scrollHeight;
+        }
+
+        // 切换自动刷新
+        function toggleAutoRefresh() {
+            const button = event.target;
+            
+            if (isAutoRefreshing) {
+                // 停止自动刷新
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+                isAutoRefreshing = false;
+                button.textContent = '开启自动刷新';
+                button.className = 'btn btn-success';
+            } else {
+                // 开始自动刷新
+                autoRefreshInterval = setInterval(() => {
+                    loadProcessDetails();
+                    loadOutput();
+                }, 5000); // 每5秒刷新一次
+                isAutoRefreshing = true;
+                button.textContent = '停止自动刷新';
+                button.className = 'btn btn-warning';
+            }
+        }
+
+        // 显示错误信息
+        function showError(message) {
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+        }
+
+        // 隐藏错误信息
+        function hideError() {
+            document.getElementById('errorMessage').style.display = 'none';
+        }
+    </script>
+</body>
+</html> 

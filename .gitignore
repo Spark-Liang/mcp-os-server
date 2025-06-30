@@ -5,9 +5,18 @@ build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
+.ruff_cache/
+uv.lock
 
 # Virtual environments
 .venv
 
 
 .obsidian/
+
+
+.tmp/
+
+# nuitka related files
+nuitka-crash-report.xml

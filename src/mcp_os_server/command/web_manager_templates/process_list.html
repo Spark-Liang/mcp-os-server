@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Command Server - 进程管理</title>
+    <style>
+        /* === 基础样式 === */
+        :root {
+            --primary-color: #007bff;
+            --success-color: #28a745;
+            --danger-color: #dc3545;
+            --warning-color: #fd7e14;
+            --secondary-color: #6c757d;
+            --light-bg: #f8f9fa;
+            --border-color: #e0e0e0;
+            --hover-bg: #e3f2fd;
+            --text-primary: #333;
+            --text-secondary: #7f8c8d;
+            --shadow: 0 2px 20px rgba(0, 0, 0, 0.1);
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: var(--text-primary);
+        }
+
+        /* === 布局容器 === */
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+        }
+
+        /* === 头部样式 === */
+        .header {
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+
+        .header .subtitle {
+            color: var(--text-secondary);
+            margin-bottom: 0;
+        }
+
+        /* === 筛选器样式 === */
+        .filters {
+            margin-bottom: 20px;
+            padding: 20px;
+            background-color: var(--light-bg);
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+        }
+
+        .filters h3 {
+            margin-top: 0;
+            margin-bottom: 15px;
+            color: #495057;
+        }
+
+        .filter-row {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .filter-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .filter-group label {
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        /* === 表单控件样式 === */
+        select, input {
+            padding: 8px 12px;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+
+        select:focus, input:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
+        }
+
+        /* === 按钮样式 === */
+        .btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            text-decoration: none;
+            display: inline-block;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+        .btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .btn-primary { background-color: var(--primary-color); color: white; }
+        .btn-primary:hover { background-color: #0056b3; }
+
+        .btn-success { background-color: var(--success-color); color: white; }
+        .btn-success:hover { background-color: #218838; }
+
+        .btn-danger { background-color: var(--danger-color); color: white; }
+        .btn-danger:hover { background-color: #c82333; }
+
+        .btn-secondary { background-color: var(--secondary-color); color: white; }
+        .btn-secondary:hover { background-color: #545b62; }
+
+        /* === 表格样式 === */
+        .table-container {
+            overflow-x: auto;
+            margin-top: 20px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background-color: #fff;
+            min-width: 800px;
+        }
+
+        th, td {
+            padding: 12px 8px;
+            border: 1px solid var(--border-color);
+            text-align: left;
+            font-size: 14px;
+        }
+
+        th {
+            background-color: var(--light-bg);
+            font-weight: 600;
+            color: #495057;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        tbody tr:nth-child(even) {
+            background-color: var(--light-bg);
+        }
+
+        tbody tr:hover {
+            background-color: var(--hover-bg);
+        }
+
+        /* === 状态样式 === */
+        .status {
+            font-weight: bold;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+
+        .status-running { color: var(--success-color); background-color: rgba(40, 167, 69, 0.1); }
+        .status-completed { color: var(--primary-color); background-color: rgba(0, 123, 255, 0.1); }
+        .status-failed, .status-error { color: var(--danger-color); background-color: rgba(220, 53, 69, 0.1); }
+        .status-terminated { color: var(--warning-color); background-color: rgba(253, 126, 20, 0.1); }
+
+        /* === 操作按钮组 === */
+        .actions {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+        }
+
+        /* === 列宽控制 === */
+        .col-pid { width: 80px; }
+        .col-command { max-width: 200px; word-break: break-all; }
+        .col-description { max-width: 150px; word-break: break-word; }
+        .col-status { width: 80px; }
+        .col-time { width: 140px; }
+        .col-actions { width: 180px; }
+
+        /* === 状态和消息样式 === */
+        .loading, .no-processes {
+            text-align: center;
+            padding: 40px;
+            color: var(--secondary-color);
+        }
+
+        .no-processes {
+            font-style: italic;
+        }
+
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+            padding: 12px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            border-left: 4px solid var(--danger-color);
+        }
+
+        /* === 响应式设计 === */
+        @media (max-width: 768px) {
+            .container {
+                padding: 15px;
+            }
+
+            .filter-row {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .filter-group {
+                justify-content: space-between;
+            }
+
+            .actions {
+                flex-direction: column;
+            }
+
+            .btn {
+                text-align: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 页面头部 -->
+        <header class="header">
+            <h1>MCP Command Server</h1>
+            <p class="subtitle">后台进程管理界面</p>
+        </header>
+        
+        <!-- 筛选器区域 -->
+        <section class="filters">
+            <h3>筛选选项</h3>
+            <div class="filter-row">
+                <div class="filter-group">
+                    <label for="status">状态：</label>
+                    <select id="status" name="status">
+                        <option value="">全部</option>
+                        <option value="running">运行中</option>
+                        <option value="completed">已完成</option>
+                        <option value="failed">失败</option>
+                        <option value="terminated">已终止</option>
+                        <option value="error">错误</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="labels">标签：</label>
+                    <input type="text" id="labels" name="labels" placeholder="用逗号分隔多个标签">
+                </div>
+                <button type="button" class="btn btn-primary" id="applyFilter">应用筛选</button>
+                <button type="button" class="btn btn-secondary" id="resetFilter">重置</button>
+                <button type="button" class="btn btn-success" id="refreshBtn">刷新</button>
+            </div>
+        </section>
+        
+        <!-- 错误消息区域 -->
+        <div id="errorMessage" class="error" style="display: none;"></div>
+        
+        <!-- 进程表格 -->
+        <section class="table-container">
+            <table id="processTable">
+                <thead>
+                    <tr>
+                        <th class="col-pid">进程ID</th>
+                        <th class="col-command">命令</th>
+                        <th class="col-description">描述</th>
+                        <th class="col-status">状态</th>
+                        <th class="col-time">开始时间</th>
+                        <th class="col-time">运行时间</th>
+                        <th class="col-actions">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="processTableBody">
+                    <tr>
+                        <td colspan="7" class="loading">正在加载进程列表...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+    </div>
+
+    <!-- JavaScript 代码 -->
+    <script>
+        /**
+         * 进程列表管理器
+         */
+        class ProcessListManager {
+            constructor() {
+                this.currentFilters = { status: '', labels: '' };
+                this.refreshInterval = null;
+                this.autoRefreshEnabled = true;
+                this.autoRefreshDelay = 5000; // 5秒自动刷新
+                
+                this.initializeElements();
+                this.bindEvents();
+                this.loadProcesses();
+                this.startAutoRefresh();
+            }
+
+            /**
+             * 初始化DOM元素引用
+             */
+            initializeElements() {
+                this.elements = {
+                    statusSelect: document.getElementById('status'),
+                    labelsInput: document.getElementById('labels'),
+                    applyFilterBtn: document.getElementById('applyFilter'),
+                    resetFilterBtn: document.getElementById('resetFilter'),
+                    refreshBtn: document.getElementById('refreshBtn'),
+                    errorMessage: document.getElementById('errorMessage'),
+                    processTableBody: document.getElementById('processTableBody')
+                };
+            }
+
+            /**
+             * 绑定事件处理器
+             */
+            bindEvents() {
+                this.elements.applyFilterBtn.addEventListener('click', () => this.applyFilters());
+                this.elements.resetFilterBtn.addEventListener('click', () => this.resetFilters());
+                this.elements.refreshBtn.addEventListener('click', () => this.loadProcesses());
+                
+                // 回车键应用筛选
+                this.elements.labelsInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') this.applyFilters();
+                });
+
+                // 页面获得焦点时刷新
+                window.addEventListener('focus', () => this.loadProcesses());
+            }
+
+            /**
+             * 启动自动刷新
+             */
+            startAutoRefresh() {
+                if (this.refreshInterval) {
+                    clearInterval(this.refreshInterval);
+                }
+                
+                if (this.autoRefreshEnabled) {
+                    this.refreshInterval = setInterval(() => {
+                        this.loadProcesses(true); // 静默刷新
+                    }, this.autoRefreshDelay);
+                }
+            }
+
+            /**
+             * 停止自动刷新
+             */
+            stopAutoRefresh() {
+                if (this.refreshInterval) {
+                    clearInterval(this.refreshInterval);
+                    this.refreshInterval = null;
+                }
+            }
+
+            /**
+             * 应用筛选器
+             */
+            applyFilters() {
+                this.currentFilters = {
+                    status: this.elements.statusSelect.value,
+                    labels: this.elements.labelsInput.value
+                };
+                this.loadProcesses();
+            }
+
+            /**
+             * 重置筛选器
+             */
+            resetFilters() {
+                this.elements.statusSelect.value = '';
+                this.elements.labelsInput.value = '';
+                this.currentFilters = { status: '', labels: '' };
+                this.loadProcesses();
+            }
+
+            /**
+             * 显示错误消息
+             */
+            showError(message) {
+                this.elements.errorMessage.textContent = message;
+                this.elements.errorMessage.style.display = 'block';
+                setTimeout(() => {
+                    this.elements.errorMessage.style.display = 'none';
+                }, 5000);
+            }
+
+            /**
+             * 隐藏错误消息
+             */
+            hideError() {
+                this.elements.errorMessage.style.display = 'none';
+            }
+
+            /**
+             * 加载进程列表
+             */
+            async loadProcesses(silent = false) {
+                if (!silent) {
+                    this.elements.processTableBody.innerHTML = '<tr><td colspan="7" class="loading">正在加载进程列表...</td></tr>';
+                }
+                
+                this.hideError();
+
+                try {
+                    const params = new URLSearchParams();
+                    if (this.currentFilters.status) params.append('status', this.currentFilters.status);
+                    if (this.currentFilters.labels) params.append('labels', this.currentFilters.labels);
+
+                    const response = await fetch(`/api/processes?${params.toString()}`);
+                    const data = await response.json();
+
+                    if (!response.ok) {
+                        throw new Error(data.error || '获取进程列表失败');
+                    }
+
+                    this.renderProcessTable(data.data);
+                } catch (error) {
+                    console.error('Error loading processes:', error);
+                    if (!silent) {
+                        this.showError('加载进程列表失败: ' + error.message);
+                        this.elements.processTableBody.innerHTML = '<tr><td colspan="7" class="error">加载失败，请重试</td></tr>';
+                    }
+                }
+            }
+
+            /**
+             * 渲染进程表格
+             */
+            renderProcessTable(processes) {
+                if (!processes || processes.length === 0) {
+                    this.elements.processTableBody.innerHTML = '<tr><td colspan="7" class="no-processes">暂无进程</td></tr>';
+                    return;
+                }
+
+                const rows = processes.map(process => this.createProcessRow(process)).join('');
+                this.elements.processTableBody.innerHTML = rows;
+            }
+
+            /**
+             * 创建进程行HTML
+             */
+            createProcessRow(process) {
+                const statusClass = `status status-${process.status}`;
+                const startTime = process.start_time ? this.formatDateTime(process.start_time) : '-';
+                const duration = this.formatDuration(process.duration);
+                const command = this.truncateText(process.command.join(' '), 50);
+                const description = this.truncateText(process.description, 30);
+
+                return `
+                    <tr data-pid="${process.pid}">
+                        <td class="col-pid">${this.escapeHtml(process.pid)}</td>
+                        <td class="col-command" title="${this.escapeHtml(process.command.join(' '))}">${this.escapeHtml(command)}</td>
+                        <td class="col-description" title="${this.escapeHtml(process.description)}">${this.escapeHtml(description)}</td>
+                        <td class="col-status"><span class="${statusClass}">${this.getStatusText(process.status)}</span></td>
+                        <td class="col-time">${startTime}</td>
+                        <td class="col-time">${duration}</td>
+                        <td class="col-actions">
+                            <div class="actions">
+                                <a href="/process/${process.pid}" class="btn btn-success" title="查看详情">查看</a>
+                                ${process.status === 'running' ? `<button class="btn btn-danger" onclick="processManager.stopProcess('${process.pid}')" title="停止进程">停止</button>` : ''}
+                                ${['completed', 'failed', 'terminated', 'error'].includes(process.status) ? `<button class="btn btn-primary" onclick="processManager.cleanProcess('${process.pid}')" title="清理进程">清理</button>` : ''}
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }
+
+            /**
+             * 停止进程
+             */
+            async stopProcess(pid) {
+                if (!confirm(`确定要停止进程 ${pid} 吗？`)) return;
+
+                try {
+                    const response = await fetch(`/api/processes/${pid}/stop`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ force: false })
+                    });
+
+                    const data = await response.json();
+                    if (!response.ok) {
+                        throw new Error(data.error || '停止进程失败');
+                    }
+
+                    this.loadProcesses();
+                } catch (error) {
+                    console.error('Error stopping process:', error);
+                    this.showError('停止进程失败: ' + error.message);
+                }
+            }
+
+            /**
+             * 清理进程
+             */
+            async cleanProcess(pid) {
+                if (!confirm(`确定要清理进程 ${pid} 吗？`)) return;
+
+                try {
+                    const response = await fetch(`/api/processes/${pid}/clean`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+
+                    const data = await response.json();
+                    if (!response.ok) {
+                        throw new Error(data.error || '清理进程失败');
+                    }
+
+                    this.loadProcesses();
+                } catch (error) {
+                    console.error('Error cleaning process:', error);
+                    this.showError('清理进程失败: ' + error.message);
+                }
+            }
+
+            // === 工具方法 ===
+
+            /**
+             * 格式化日期时间
+             */
+            formatDateTime(isoString) {
+                if (!isoString) return '-';
+                try {
+                    const date = new Date(isoString);
+                    return date.toLocaleString('zh-CN', {
+                        year: 'numeric',
+                        month: '2-digit',
+                        day: '2-digit',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                    });
+                } catch {
+                    return '-';
+                }
+            }
+
+            /**
+             * 格式化持续时间
+             */
+            formatDuration(seconds) {
+                if (!seconds || seconds < 0) return '-';
+                
+                const hours = Math.floor(seconds / 3600);
+                const minutes = Math.floor((seconds % 3600) / 60);
+                const secs = Math.floor(seconds % 60);
+                
+                if (hours > 0) return `${hours}h ${minutes}m ${secs}s`;
+                if (minutes > 0) return `${minutes}m ${secs}s`;
+                return `${secs}s`;
+            }
+
+            /**
+             * 截断文本
+             */
+            truncateText(text, maxLength) {
+                if (!text || text.length <= maxLength) return text;
+                return text.substring(0, maxLength) + '...';
+            }
+
+            /**
+             * 转义HTML
+             */
+            escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+
+            /**
+             * 获取状态文本
+             */
+            getStatusText(status) {
+                const statusMap = {
+                    'running': '运行中',
+                    'completed': '已完成',
+                    'failed': '失败',
+                    'terminated': '已终止',
+                    'error': '错误'
+                };
+                return statusMap[status] || status;
+            }
+        }
+
+        // 初始化进程管理器
+        let processManager;
+        document.addEventListener('DOMContentLoaded', () => {
+            processManager = new ProcessListManager();
+        });
+
+        // 页面卸载时清理
+        window.addEventListener('beforeunload', () => {
+            if (processManager) {
+                processManager.stopAutoRefresh();
+            }
+        });
+    </script>
+</body>
+</html> 

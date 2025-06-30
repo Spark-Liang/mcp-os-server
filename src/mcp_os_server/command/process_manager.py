@@ -1,0 +1,414 @@
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+import time
+import uuid
+import shutil
+from datetime import datetime, timezone
+from typing import AsyncGenerator, Dict, List, Optional
+
+from .exceptions import (
+    CommandExecutionError,
+    ProcessCleanError,
+    ProcessControlError,
+    ProcessInfoRetrievalError,
+    ProcessNotFoundError,
+    ProcessTimeoutError,
+)
+from .interfaces import (
+    IOutputManager,
+    IProcess,
+    IProcessManager,
+    OutputMessageEntry,
+    ProcessInfo,
+    ProcessStatus,
+)
+
+
+class Process(IProcess):
+    _info: ProcessInfo
+    _process: asyncio.subprocess.Process
+    _output_manager: IOutputManager
+    _completion_event: asyncio.Event
+    _monitor_task: asyncio.Task
+    _is_stopping: bool
+
+    def __init__(
+        self,
+        process: asyncio.subprocess.Process,
+        info: ProcessInfo,
+        output_manager: IOutputManager,
+        monitor_task: asyncio.Task,
+    ):
+        self._process = process
+        self._info = info
+        self._output_manager = output_manager
+        self._completion_event = asyncio.Event()
+        self._monitor_task = monitor_task
+        self._is_stopping = False
+
+    @property
+    def pid(self) -> str:
+        return self._info.pid
+
+    async def get_details(self) -> ProcessInfo:
+        return self._info
+
+    async def wait_for_completion(self, timeout: Optional[int] = None) -> ProcessInfo:
+        try:
+            await asyncio.wait_for(self._completion_event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            raise ProcessTimeoutError(f"Process {self.pid} timed out after {timeout} seconds.")
+        return self._info
+
+    async def get_output(
+        self,
+        output_key: str,
+        since: Optional[float] = None,
+        until: Optional[float] = None,
+        tail: Optional[int] = None,
+    ) -> AsyncGenerator[OutputMessageEntry, None]:
+        async for entry in self._output_manager.get_output(
+            self.pid, output_key, since, until, tail
+        ):
+            yield entry
+
+    async def stop(self, force: bool = False, reason: Optional[str] = None) -> None:
+        if self._info.status != ProcessStatus.RUNNING:
+            return
+
+        self._is_stopping = True
+        if reason:
+            self._info.error_message = reason
+        
+        try:
+            if force:
+                self._process.kill()
+            else:
+                self._process.terminate()
+            
+            # Wait for the monitor to confirm the process has exited.
+            # Add a timeout to prevent hanging indefinitely.
+            await asyncio.wait_for(self._completion_event.wait(), timeout=15)
+        except ProcessLookupError:
+            # Process already finished, which is fine.
+            pass
+        except asyncio.TimeoutError:
+            # If it times out, the caller can decide if that's an error.
+            # Forcing a kill again might be an option, but for now we just log it.
+            self._info.error_message = (self._info.error_message or "") + "Timed out waiting for termination."
+        except Exception as e:
+            raise ProcessControlError(f"Failed to stop process {self.pid}: {e}") from e
+
+    async def clean(self) -> str:
+        if self._info.status == ProcessStatus.RUNNING:
+            raise ProcessCleanError(f"Cannot clean running process {self.pid}. Stop it first.")
+        
+        # Cancel the monitor task if it's somehow still running
+        if self._monitor_task and not self._monitor_task.done():
+            self._monitor_task.cancel()
+            
+        await self._output_manager.clear_output(self.pid)
+        return "Success"
+
+
+class ProcessManager(IProcessManager):
+    def __init__(self, output_manager: IOutputManager, process_retention_seconds: int = 3600):
+        self._output_manager = output_manager
+        self._process_retention_seconds = process_retention_seconds
+        self._processes: Dict[str, Process] = {}
+        self._cleanup_handles: Dict[str, asyncio.Handle] = {}
+
+    async def initialize(self) -> None:
+        # No longer need to start a periodic cleanup task
+        pass
+
+    async def shutdown(self) -> None:
+        # Cancel all pending cleanup handles
+        for handle in self._cleanup_handles.values():
+            if not handle.cancelled():
+                handle.cancel()
+        self._cleanup_handles.clear()
+
+        # Stop all running processes
+        running_procs = [proc for proc in self._processes.values() if proc._info.status == ProcessStatus.RUNNING]
+        if running_procs:
+            await asyncio.gather(
+                *(proc.stop(force=True, reason="Manager is shutting down") for proc in running_procs),
+                return_exceptions=True
+            )
+        
+        # Wait for all monitor tasks to complete
+        all_monitor_tasks = [proc._monitor_task for proc in self._processes.values() if proc._monitor_task and not proc._monitor_task.done()]
+        if all_monitor_tasks:
+            await asyncio.gather(
+                *all_monitor_tasks,
+                return_exceptions=True
+            )
+
+    def _schedule_process_cleanup(self, process_id: str) -> None:
+        """同步函数，用于call_later调用，创建异步清理任务"""
+        if process_id in self._processes:
+            # 创建异步任务来执行清理
+            asyncio.create_task(self._cleanup_single_process(process_id))
+
+    async def _cleanup_single_process(self, process_id: str) -> None:
+        """清理单个进程"""
+        try:
+            # 移除cleanup handle记录
+            self._cleanup_handles.pop(process_id, None)
+            
+            if process_id not in self._processes:
+                return
+                
+            process = self._processes[process_id]
+            
+            # 只清理非运行状态的进程
+            if process._info.status not in [ProcessStatus.RUNNING, ProcessStatus.TERMINATED]:
+                await self.clean_processes([process_id])
+        except Exception:
+            # 静默处理清理错误，避免影响其他进程
+            pass
+
+    def _schedule_cleanup_for_process(self, process_id: str) -> None:
+        """为进程安排延迟清理任务"""
+        # 取消之前的清理任务（如果存在）
+        if process_id in self._cleanup_handles:
+            old_handle = self._cleanup_handles[process_id]
+            if not old_handle.cancelled():
+                old_handle.cancel()
+        
+        # 安排新的清理任务
+        loop = asyncio.get_event_loop()
+        handle = loop.call_later(
+            self._process_retention_seconds,
+            self._schedule_process_cleanup,
+            process_id
+        )
+        self._cleanup_handles[process_id] = handle
+
+    async def start_process(
+        self,
+        command: List[str],
+        directory: str,
+        description: str,
+        stdin_data: Optional[bytes] = None,
+        timeout: Optional[int] = None,
+        envs: Optional[Dict[str, str]] = None,
+        encoding: Optional[str] = None,
+        labels: Optional[List[str]] = None,
+    ) -> IProcess:
+        # Normalize and validate the directory path
+        normalized_directory = os.path.abspath(directory)
+        if not os.path.isdir(normalized_directory):
+            raise CommandExecutionError(f"Directory not found: {directory}")
+
+        process_id = str(uuid.uuid4())
+        start_time = datetime.now(timezone.utc)
+        
+        # Prepare environment
+        process_envs = os.environ.copy()
+        if envs:
+            process_envs.update(envs)
+
+        # Store the original command for display and later use
+        original_command = command.copy()
+        
+        # On Windows, check for built-in commands first to avoid conflicts with external tools
+        if sys.platform == "win32":
+            # List of common Windows built-in commands
+            windows_builtins = {
+                'echo', 'dir', 'cd', 'copy', 'del', 'md', 'mkdir', 'rd', 'rmdir', 
+                'type', 'cls', 'date', 'time', 'vol', 'ver', 'set', 'path',
+                'move', 'ren', 'rename', 'attrib', 'find', 'fc', 'comp'
+            }
+            
+            if command[0].lower() in windows_builtins:
+                # Use cmd.exe to run built-in commands on Windows
+                command_to_execute = ["cmd.exe", "/c"] + command
+            else:
+                # Determine the executable path using shutil.which for non-builtin commands
+                # Pass the process_envs to shutil.which to respect custom PATH
+                executable_path = shutil.which(command[0], path=process_envs.get('PATH'))
+                
+                if not executable_path:
+                    raise CommandExecutionError(f"Command not found: {original_command[0]}")
+                else:
+                    # Check if the found executable is a script file that needs cmd.exe to run
+                    executable_path_lower = executable_path.lower()
+                    if executable_path_lower.endswith(('.cmd', '.bat', '.com')):
+                        # Use cmd.exe to run script files on Windows
+                        command_to_execute = ["cmd.exe", "/c", executable_path] + command[1:]
+                    else:
+                        # Use the full path found by shutil.which, and keep the rest of the arguments
+                        command_to_execute = [executable_path] + command[1:]
+        else:
+            # Non-Windows systems: use shutil.which to find commands
+            executable_path = shutil.which(command[0], path=process_envs.get('PATH'))
+            
+            if not executable_path:
+                raise CommandExecutionError(f"Command not found: {original_command[0]}")
+            else:
+                # Use the full path found by shutil.which, and keep the rest of the arguments
+                command_to_execute = [executable_path] + command[1:]
+
+        try:
+            # For CMD scripts on Windows, ensure proper stdin handling
+            stdin_mode = None
+            if stdin_data:
+                stdin_mode = asyncio.subprocess.PIPE
+            elif sys.platform == "win32" and len(command_to_execute) > 2 and command_to_execute[0].lower() == "cmd.exe":
+                # For cmd.exe executed scripts, explicitly close stdin to prevent hanging
+                stdin_mode = asyncio.subprocess.DEVNULL
+            else:
+                stdin_mode = None
+                
+            process = await asyncio.create_subprocess_exec(
+                *command_to_execute,
+                cwd=directory,
+                stdin=stdin_mode,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=process_envs,
+            )
+        except FileNotFoundError:
+            raise CommandExecutionError(f"Command not found: {original_command[0]}")
+        except Exception as e:
+            raise CommandExecutionError(f"Failed to start command '{' '.join(original_command)}': {e}") from e
+
+        if stdin_data and process.stdin:
+            try:
+                process.stdin.write(stdin_data)
+                await process.stdin.drain()
+                process.stdin.close()
+            except (BrokenPipeError, ConnectionResetError):
+                # This can happen if the process exits quickly before stdin is fully written.
+                pass
+
+
+        info = ProcessInfo(
+            pid=process_id,
+            command=original_command,  # Store the original command for display
+            directory=directory,
+            description=description,
+            status=ProcessStatus.RUNNING,
+            start_time=start_time,
+            end_time=None,
+            exit_code=None,
+            error_message=None,
+            timeout=timeout,
+            labels=labels or [],
+        )
+
+        monitor_task = asyncio.create_task(self._monitor_process(process_id, process, timeout, encoding))
+        
+        process_obj = Process(process, info, self._output_manager, monitor_task)
+        self._processes[process_id] = process_obj
+        
+        # Store a message to ensure log directory is created
+        await self._output_manager.store_output(process_id, "manager", f"Process created at {start_time}")
+        
+        return process_obj
+
+    async def _monitor_process(self, process_id: str, process: asyncio.subprocess.Process, timeout: Optional[int], encoding: Optional[str]):
+        proc_obj = self._processes[process_id]
+        info = proc_obj._info
+        
+        # Default to system's encoding or fallback to utf-8
+        output_encoding = encoding or sys.getdefaultencoding() or 'utf-8'
+
+        async def read_stream(stream: Optional[asyncio.StreamReader], output_key: str):
+            if not stream:
+                return
+            while True:
+                try:
+                    line_bytes = await stream.readline()
+                    if not line_bytes:
+                        break
+                    line = line_bytes.decode(output_encoding, errors='replace').strip()
+                    await self._output_manager.store_output(process_id, output_key, line)
+                except Exception:
+                    # Can happen if process is killed
+                    break
+
+        stdout_task = asyncio.create_task(read_stream(process.stdout, "stdout"))
+        stderr_task = asyncio.create_task(read_stream(process.stderr, "stderr"))
+
+        try:
+            exit_code = await asyncio.wait_for(process.wait(), timeout=timeout)
+            info.exit_code = exit_code
+            if proc_obj._is_stopping:
+                info.status = ProcessStatus.TERMINATED
+            else:
+                info.status = ProcessStatus.COMPLETED if exit_code == 0 else ProcessStatus.FAILED
+        except asyncio.TimeoutError:
+            info.status = ProcessStatus.TERMINATED
+            info.error_message = f"Process timed out after {timeout} seconds and was terminated."
+            await proc_obj.stop(force=True) # Ensure it's killed
+            info.exit_code = process.returncode
+        except Exception as e:
+            info.status = ProcessStatus.ERROR
+            info.error_message = str(e)
+            info.exit_code = process.returncode
+        finally:
+            stdout_task.cancel()
+            stderr_task.cancel()
+            # Ensure output readers are done. This can take a moment.
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            info.end_time = datetime.now(timezone.utc)
+            proc_obj._completion_event.set()
+            
+            # 进程结束后，安排延迟清理任务
+            self._schedule_cleanup_for_process(process_id)
+
+    async def stop_process(self, process_id: str, force: bool = False, reason: Optional[str] = None) -> None:
+        if process_id not in self._processes:
+            raise ProcessNotFoundError(f"Process with ID {process_id} not found.")
+        await self._processes[process_id].stop(force=force, reason=reason)
+
+    async def get_process(self, process_id: str) -> IProcess:
+        if process_id not in self._processes:
+            raise ProcessNotFoundError(f"Process with ID {process_id} not found.")
+        return self._processes[process_id]
+
+    async def get_process_info(self, process_id: str) -> ProcessInfo:
+        if process_id not in self._processes:
+            raise ProcessNotFoundError(f"Process with ID {process_id} not found.")
+        return await self._processes[process_id].get_details()
+
+    async def list_processes(
+        self, status: Optional[ProcessStatus] = None, labels: Optional[List[str]] = None
+    ) -> List[ProcessInfo]:
+        procs = list(self._processes.values())
+
+        if status:
+            procs = [p for p in procs if p._info.status == status]
+
+        if labels:
+            procs = [p for p in procs if set(labels).issubset(set(p._info.labels))]
+
+        return [p._info for p in procs]
+
+    async def clean_processes(self, process_ids: List[str]) -> Dict[str, str]:
+        results = {}
+        for process_id in process_ids:
+            if process_id in self._processes:
+                # 取消对应的清理任务
+                if process_id in self._cleanup_handles:
+                    handle = self._cleanup_handles[process_id]
+                    if not handle.cancelled():
+                        handle.cancel()
+                    del self._cleanup_handles[process_id]
+                
+                process = self._processes[process_id]
+                try:
+                    await process.clean()
+                    results[process_id] = "Success"
+                    del self._processes[process_id]
+                except ProcessCleanError as e:
+                    results[process_id] = f"Failed: {e}"
+            else:
+                results[process_id] = "Not found"
+        return results 

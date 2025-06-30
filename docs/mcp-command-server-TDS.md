@@ -47,9 +47,18 @@ graph TD
 
 ```python
 import asyncio
-from typing import Dict, List, Optional, Tuple, AsyncGenerator, Protocol
+from typing import Dict, List, Optional, Tuple, AsyncGenerator, Protocol, Union
 from pydantic import BaseModel, Field
 import enum
+from datetime import datetime
+from abc import abstractmethod
+
+class OutputMessageEntry(BaseModel):
+    """日志条目模型，表示单条日志记录。"""
+
+    timestamp: datetime = Field(..., description="日志记录时间戳")
+    text: str = Field("", description="日志内容")
+    output_key: Optional[str] = Field(None, description="输出类型，如stdout或stderr")
 
 class IOutputManager(Protocol):
     """
@@ -60,28 +69,17 @@ class IOutputManager(Protocol):
     例如：output_storage_path: str = Field("./command_outputs", description="进程输出的存储路径")
     """
 
-    async def initialize(self) -> None:
-        """
-        初始化输出管理器。
-        此方法用于执行任何必要的设置或资源分配。
-
-        Raises:
-            IOError: 如果初始化过程中发生IO错误。
-            Exception: 任何其他初始化期间发生的未预期错误。
-        """
-        ...
-
     async def store_output(self,
                            process_id: str,
                            output_key: str,
-                           data: str) -> None:
+                           message: str | list[str]) -> None:
         """
         存储指定进程的特定输出数据（stdout 或 stderr）。
 
         Args:
             process_id (str): 进程的唯一标识符。
             output_key (str): 输出内容的键，如 "stdout" 或 "stderr"。
-            data (str): 要存储的字符串数据。
+            message (str | list[str]): 输出的消息内容或者消息列表。
 
         Raises:
             ValueError: 如果 process_id 或 output_key 无效。
@@ -94,10 +92,7 @@ class IOutputManager(Protocol):
                          output_key: str,
                          since: Optional[float] = None,
                          until: Optional[float] = None,
-                         tail: Optional[int] = None,
-                         limit_lines: Optional[int] = None,
-                         grep_pattern: Optional[str] = None,
-                         grep_mode: str = "line") -> AsyncGenerator[str, None]:
+                         tail: Optional[int] = None) -> AsyncGenerator[OutputMessageEntry, None]:
         """
         异步获取指定进程的特定输出流（stdout 或 stderr）。
 
@@ -107,15 +102,12 @@ class IOutputManager(Protocol):
             since (Optional[float]): 时间戳，仅返回该时间戳之后的日志。
             until (Optional[float]): 时间戳，仅返回该时间戳之前的日志。
             tail (Optional[int]): 从末尾返回的行数。
-            limit_lines (Optional[int]): 每个TextContent返回的最大行数。
-            grep_pattern (Optional[str]): 用于筛选输出的正则表达式。
-            grep_mode (str): 正则表达式匹配模式，'line' 或 'content'。
 
         Yields:
-            str: 对应的字符串数据。
+            OutputMessageEntry: 包含时间戳、内容和输出键的日志条目。
 
         Raises:
-            ValueError: 如果 process_id 或 output_key 为空或 grep_mode 无效。
+            ValueError: 如果 process_id 或 output_key 为空。
             ProcessNotFoundError: 如果指定的进程ID不存在。
             OutputRetrievalError: 如果获取输出过程中发生错误。
         """
@@ -142,6 +134,67 @@ class IOutputManager(Protocol):
         Raises:
             Exception: 任何关闭期间发生的未预期错误。
         """
+        ...
+
+```
+
+`IOutputLogger` 的设计旨在提供一个灵活的接口，允许后端实现根据需求适配不同的输出消息存储格式。例如，在调试模式下可以使用易于阅读的 YAML 格式来提高可读性，而在生产环境中则可以使用 Avro 等格式以优化插入和查询的速度，从而确保系统的可扩展性和性能。
+
+```python
+
+class MessageEntry(BaseModel):
+    """日志条目模型，表示单条日志记录。"""
+
+    timestamp: datetime = Field(..., description="日志记录时间戳")
+    text: str = Field("", description="日志内容")
+
+
+class IOutputLogger(Protocol):
+    """输出日志记录器接口，定义日志读写操作。"""
+
+    @abstractmethod
+    def add_message(self, message: str) -> None:
+        """添加单条消息日志。
+
+        Args:
+            message: 日志内容
+        """
+        ...
+
+    @abstractmethod
+    def add_messages(self, messages: List[str]) -> None:
+        """批量添加多条消息日志。
+
+        Args:
+            messages: 日志内容列表
+        """
+        ...
+
+    @abstractmethod
+    async def get_logs(
+        self,
+        tail: Optional[int] = None,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+    ) -> AsyncGenerator[MessageEntry, None]:
+        """获取符合条件的日志。
+
+        Args:
+            tail: 只返回最后的n行
+            since: 只返回指定时间之后的日志
+            until: 只返回指定时间之前的日志
+
+        Yields:
+            MessageEntry: 日志记录对象，包含timestamp和text字段
+
+        Raises:
+            Exception: 获取日志过程中发生的任何错误。
+        """
+        ...
+
+    @abstractmethod
+    def close(self) -> None:
+        """关闭日志并清理资源。"""
         ...
 ```
 
@@ -220,10 +273,7 @@ class IProcess(Protocol):
                          output_key: str,
                          since: Optional[float] = None,
                          until: Optional[float] = None,
-                         tail: Optional[int] = None,
-                         limit_lines: Optional[int] = None,
-                         grep_pattern: Optional[str] = None,
-                         grep_mode: str = "line") -> AsyncGenerator[str, None]:
+                         tail: Optional[int] = None) -> AsyncGenerator[OutputMessageEntry, None]:
         """
         异步获取此进程的特定输出流。
 
@@ -232,15 +282,12 @@ class IProcess(Protocol):
             since (Optional[float]): 时间戳，仅返回该时间戳之后的日志。
             until (Optional[float]): 时间戳，仅返回该时间戳之前的日志。
             tail (Optional[int]): 从末尾返回的行数。
-            limit_lines (Optional[int]): 每个TextContent返回的最大行数。
-            grep_pattern (Optional[str]): 用于筛选输出的正则表达式。
-            grep_mode (str): 正则表达式匹配模式，'line' 或 'content'。
 
         Yields:
-            str: 对应的字符串数据。
+            OutputMessageEntry: 包含时间戳、内容和输出键的日志条目。
 
         Raises:
-            ValueError: 如果 output_key 或 grep_mode 无效。
+            ValueError: 如果 output_key 为空。
             OutputRetrievalError: 如果获取输出过程中发生错误。
         """
         ...
@@ -505,15 +552,12 @@ class ICommandExecutor(Protocol):
         """
         ...
 
-    async def get_background_command_logs(self,
+    async def get_process_logs(self,
                                           process_id: str,
                                           output_key: str,
                                           since: Optional[float] = None,
                                           until: Optional[float] = None,
-                                          tail: Optional[int] = None,
-                                          limit_lines: Optional[int] = None,
-                                          grep_pattern: Optional[str] = None,
-                                          grep_mode: str = "line") -> AsyncGenerator[str, None]:
+                                          tail: Optional[int] = None) -> AsyncGenerator[OutputMessageEntry, None]:
         """
         获取后台命令的输出流。
 
@@ -523,21 +567,18 @@ class ICommandExecutor(Protocol):
             since (Optional[float]): 时间戳，仅返回该时间戳之后的日志。
             until (Optional[float]): 时间戳，仅返回该时间戳之前的日志。
             tail (Optional[int]): 从末尾返回的行数。
-            limit_lines (Optional[int]): 每个 TextContent 返回的最大行数。
-            grep_pattern (Optional[str]): 用于筛选输出的正则表达式。
-            grep_mode (str): 正则表达式匹配模式，'line' 或 'content'。
 
         Yields:
-            str: 对应的字符串数据。
+            OutputMessageEntry: 包含时间戳、内容和输出键的日志条目。
 
         Raises:
-            ValueError: 如果 process_id 或 output_key 为空或 grep_mode 无效。
+            ValueError: 如果 process_id 或 output_key 为空。
             ProcessNotFoundError: 如果指定的进程ID不存在。
             OutputRetrievalError: 如果获取输出过程中发生错误。
         """
         ...
 
-    async def stop_background_command(self, process_id: str, force: bool = False, reason: Optional[str] = None) -> None:
+    async def stop_process(self, process_id: str, force: bool = False, reason: Optional[str] = None) -> None:
         """
         停止一个后台命令。
 
@@ -553,7 +594,7 @@ class ICommandExecutor(Protocol):
         """
         ...
 
-    async def list_background_commands(self,
+    async def list_process(self,
                                        status: Optional[ProcessStatus] = None,
                                        labels: Optional[List[str]] = None) -> List['ProcessInfo']:
         """
@@ -571,7 +612,7 @@ class ICommandExecutor(Protocol):
         """
         ...
 
-    async def get_background_command_detail(self, process_id: str) -> 'ProcessInfo':
+    async def get_process_detail(self, process_id: str) -> 'ProcessInfo':
         """
         获取后台命令的详细信息。
 
@@ -588,7 +629,7 @@ class ICommandExecutor(Protocol):
         """
         ...
 
-    async def clean_background_commands(self, process_ids: List[str]) -> Dict[str, str]:
+    async def clean_process(self, process_ids: List[str]) -> Dict[str, str]:
         """
         清理已完成或失败的后台命令。
 
@@ -616,6 +657,9 @@ class ICommandExecutor(Protocol):
     async def get_process_manager(self) -> 'IProcessManager':
         """
         获取进程管理器实例。
+
+        Returns:
+            IProcessManager: 进程管理器实例。
         """
         ...
 ```
@@ -969,11 +1013,11 @@ graph TD
     WebManager[WebManager] -- 调用 --> ICommandExecutor[ICommandExecutor]
 
     subgraph ICommandExecutor Functions
-        CE_List[list_background_commands]
-        CE_Detail[get_background_command_detail]
-        CE_Logs[get_background_command_logs]
-        CE_Stop[stop_background_command]
-        CE_Clean[clean_background_commands]
+        CE_List[list_process]
+        CE_Detail[get_process_detail]
+        CE_Logs[get_process_logs]
+        CE_Stop[stop_process]
+        CE_Clean[clean_process]
     end
 
     WebManager --> CE_List
@@ -1172,15 +1216,20 @@ class WebInterfaceError(CommandServerException):
 
 #### 10.1.1. 单元测试
 
-| 名称            | 描述                          | 待测方法          | 实例调用方式                                         |
-| --------------- | ----------------------------- | ----------------- | ---------------------------------------------------- |
-| 初始化          | 测试 OutputManager 的初始化   | `initialize()`    | `await output_manager.initialize()`                  |
-| 存储输出        | 测试存储标准输出和错误输出    | `store_output()`  | `await output_manager.store_output("pid1", "stdout", "hello")` |
-| 获取输出        | 测试获取特定进程的标准输出    | `get_output()`    | `async for line in output_manager.get_output("pid1", "stdout")` |
-| 带有筛选的获取输出 | 测试带有时间、行数和grep筛选的获取输出 | `get_output()`    | `async for line in output_manager.get_output("pid1", "stdout", since=ts, tail=10, grep_pattern="pattern")` |
-| 清理输出        | 测试清理特定进程的所有输出    | `clear_output()`  | `await output_manager.clear_output("pid1")`          |
-| 关闭            | 测试 OutputManager 的关闭     | `shutdown()`      | `await output_manager.shutdown()`                    |
-| 错误处理        | 测试无效PID和键的错误处理     | `store_output()`, `get_output()`, `clear_output()` | `pytest.raises(ValueError, output_manager.store_output(...))` |
+| 名称           | 描述                                               | 待测方法                                               | 实例调用方式                                                                                                     |
+| ------------ | ------------------------------------------------ | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| 初始化          | 测试 OutputManager 的初始化                            | `initialize()`                                     | `await output_manager.initialize()`                                                                        |
+| 存储输出         | 测试存储标准输出和错误输出                                    | `store_output()`                                   | `await output_manager.store_output("pid1", "stdout", "hello")`                                             |
+| 获取输出         | 测试获取特定进程的标准输出                                    | `get_output()`                                     | `async for line in output_manager.get_output("pid1", "stdout")`                                            |
+| 带有筛选的获取输出    | 测试带有时间、行数和grep筛选的获取输出                            | `get_output()`                                     | `async for line in output_manager.get_output("pid1", "stdout", since=ts, tail=10, grep_pattern="pattern")` |
+| 清理输出         | 测试清理特定进程的所有输出                                    | `clear_output()`                                   | `await output_manager.clear_output("pid1")`                                                                |
+| 关闭           | 测试 OutputManager 的关闭                             | `shutdown()`                                       | `await output_manager.shutdown()`                                                                          |
+| 错误处理 (无效参数)  | 测试 `process_id` 或 `output_key` 无效时 `ValueError`  | `store_output()`, `get_output()`, `clear_output()` | `pytest.raises(ValueError, output_manager.store_output("","stdout","msg"))`                                |
+| 错误处理 (存储失败)  | 测试 `store_output` 遇到存储错误时 `StorageError`         | `store_output()`                                   | `pytest.raises(StorageError, output_manager.store_output("pid1", "stdout", "msg"))`                        |
+| 错误处理 (进程未找到) | 测试 `process_id` 不存在时 `ProcessNotFoundError`      | `get_output()`, `clear_output()`                   | `pytest.raises(ProcessNotFoundError, output_manager.get_output("nonexistent", "stdout"))`                  |
+| 错误处理 (获取失败)  | 测试 `get_output` 遇到获取输出错误时 `OutputRetrievalError` | `get_output()`                                     | `pytest.raises(OutputRetrievalError, output_manager.get_output("pid1", "stdout"))`                         |
+| 错误处理 (清理失败)  | 测试 `clear_output` 遇到清理错误时 `OutputClearError`     | `clear_output()`                                   | `pytest.raises(OutputClearError, output_manager.clear_output("pid1"))`                                     |
+| 错误处理 (关闭失败)  | 测试 `shutdown` 遇到错误时抛出 `Exception`                | `shutdown()`                                       | `pytest.raises(Exception, output_manager.shutdown())`                                                      |
 
 #### 10.1.2. 集成测试
 
@@ -1192,61 +1241,104 @@ class WebInterfaceError(CommandServerException):
 
 #### 10.2.1. 单元测试
 
-| 名称                        | 描述                                     | 待测方法                                              | 实例调用方式                                         |
-| --------------------------- | ---------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------- |
-| 初始化                      | 测试 ProcessManager 的初始化             | `initialize()`                                        | `await process_manager.initialize()`                 |
-| 启动进程                    | 测试启动一个后台进程并验证其初始状态     | `start_process()`                                     | `process = await process_manager.start_process(...)` |
-| 停止进程                    | 测试停止一个正在运行的进程 (强制/非强制) | `stop_process()`                                      | `await process_manager.stop_process(pid, force=True)` |
-| 获取进程信息                | 测试获取特定进程的详细信息               | `get_process_info()`                                  | `info = await process_manager.get_process_info(pid)` |
-| 列出进程                    | 测试按状态和标签过滤列出进程             | `list_processes()`                                    | `processes = await process_manager.list_processes(status=ProcessStatus.RUNNING)` |
-| 清理进程                    | 测试清理已完成或失败的进程               | `clean_processes()`                                   | `results = await process_manager.clean_processes([pid])` |
-| 关闭                        | 测试 ProcessManager 的关闭               | `shutdown()`                                          | `await process_manager.shutdown()`                   |
-| IProcess: 获取详情          | 测试获取单个进程实例的详细信息           | `IProcess.get_details()`                              | `info = await process.get_details()`                 |
-| IProcess: 等待完成          | 测试等待进程完成，包括超时               | `IProcess.wait_for_completion()`                      | `await process.wait_for_completion(timeout=5)`       |
-| IProcess: 获取输出          | 测试获取单个进程实例的输出               | `IProcess.get_output()`                               | `async for line in process.get_output("stdout")`     |
-| IProcess: 停止              | 测试停止单个进程实例                     | `IProcess.stop()`                                     | `await process.stop(force=True)`                     |
-| IProcess: 清理              | 测试清理单个进程实例的资源               | `IProcess.clean()`                                    | `await process.clean()`                              |
-| 错误处理 (进程未找到)     | 测试进程不存在时的错误处理               | `get_process_info()`, `stop_process()`, `IProcess` 方法 | `pytest.raises(ProcessNotFoundError, ...)`           |
-| 错误处理 (命令执行失败)   | 测试命令启动或执行失败时的错误处理       | `start_process()`                                     | `pytest.raises(CommandExecutionError, ...)`          |
-| 错误处理 (超时)           | 测试进程执行超时时的错误处理             | `IProcess.wait_for_completion()`                      | `pytest.raises(ProcessTimeoutError, ...)`            |
+| 名称                      | 描述                                                                     | 待测方法                                                  | 实例调用方式                                                                                                     |
+| ----------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| 初始化                     | 测试 ProcessManager 的初始化                                                 | `initialize()`                                        | `await process_manager.initialize()`                                                                       |
+| 启动进程                    | 测试启动一个后台进程并验证其初始状态                                                     | `start_process()`                                     | `process = await process_manager.start_process(...)`                                                       |
+| 停止进程                    | 测试停止一个正在运行的进程 (强制/非强制)                                                 | `stop_process()`                                      | `await process_manager.stop_process(pid, force=True)`                                                      |
+| 获取进程信息                  | 测试获取特定进程的详细信息                                                          | `get_process_info()`                                  | `info = await process_manager.get_process_info(pid)`                                                       |
+| 列出进程                    | 测试按状态和标签过滤列出进程                                                         | `list_processes()`                                    | `processes = await process_manager.list_processes(status=ProcessStatus.RUNNING)`                           |
+| 清理进程                    | 测试清理已完成或失败的进程                                                          | `clean_processes()`                                   | `results = await process_manager.clean_processes([pid])`                                                   |
+| 关闭                      | 测试 ProcessManager 的关闭                                                  | `shutdown()`                                          | `await process_manager.shutdown()`                                                                         |
+| IProcess: 获取详情          | 测试获取单个进程实例的详细信息                                                        | `IProcess.get_details()`                              | `info = await process.get_details()`                                                                       |
+| IProcess: 等待完成          | 测试等待进程完成，包括超时                                                          | `IProcess.wait_for_completion()`                      | `await process.wait_for_completion(timeout=5)`                                                             |
+| IProcess: 获取输出          | 测试获取单个进程实例的输出                                                          | `IProcess.get_output()`                               | `async for line in process.get_output("stdout")`                                                           |
+| IProcess: 停止            | 测试停止单个进程实例                                                             | `IProcess.stop()`                                     | `await process.stop(force=True)`                                                                           |
+| IProcess: 清理            | 测试清理单个进程实例的资源                                                          | `IProcess.clean()`                                    | `await process.clean()`                                                                                    |
+| 错误处理 (进程未找到)            | 测试进程不存在时 `ProcessNotFoundError`                                        | `get_process_info()`, `stop_process()`, `IProcess` 方法 | `pytest.raises(ProcessNotFoundError, process_manager.get_process_info("nonexistent"))`                     |
+| 错误处理 (命令执行失败)           | 测试命令启动或执行失败时 `CommandExecutionError`                                   | `start_process()`                                     | `pytest.raises(CommandExecutionError, process_manager.start_process(["nonexistent_cmd"], "/tmp", "desc"))` |
+| 错误处理 (超时)               | 测试进程执行超时时 `ProcessTimeoutError`                                        | `IProcess.wait_for_completion()`                      | `pytest.raises(ProcessTimeoutError, process.wait_for_completion(timeout=0.1))`                             |
+| 错误处理 (无权限)              | 测试无足够权限执行命令时 `PermissionError`                                         | `start_process()`                                     | `pytest.raises(PermissionError, process_manager.start_process(["ls"], "/root", "desc"))`                   |
+| 错误处理 (参数无效: 启动)         | 测试 `start_process` 中 `command` 或 `directory` 无效时 `ValueError`          | `start_process()`                                     | `pytest.raises(ValueError, process_manager.start_process([], "/tmp", "desc"))`                             |
+| 错误处理 (参数无效: 停止)         | 测试 `stop_process` 中 `process_id` 为空时 `ValueError`                      | `stop_process()`                                      | `pytest.raises(ValueError, process_manager.stop_process(""))`                                              |
+| 错误处理 (参数无效: 获取信息)       | 测试 `get_process_info` 中 `process_id` 为空时 `ValueError`                  | `get_process_info()`                                  | `pytest.raises(ValueError, process_manager.get_process_info(""))`                                          |
+| 错误处理 (参数无效: 列出)         | 测试 `list_processes` 中 `labels` 或 `status` 参数无效时的 `ValueError` （如果接口支持） | `list_processes()`                                    | `pytest.raises(ValueError, process_manager.list_processes(status="invalid"))`                              |
+| 错误处理 (参数无效: 清理)         | 测试 `clean_processes` 中 `process_ids` 为空列表时 `ValueError`                | `clean_processes()`                                   | `pytest.raises(ValueError, process_manager.clean_processes([]))`                                           |
+| 错误处理 (进程控制失败)           | 测试进程控制操作失败时 `ProcessControlError`                                      | `stop_process()`, `IProcess.stop()`                   | `pytest.raises(ProcessControlError, process_manager.stop_process("pid1"))`                                 |
+| 错误处理 (获取进程信息失败)         | 测试获取进程信息失败时 `ProcessInfoRetrievalError`                                | `get_process_info()`, `IProcess.get_details()`        | `pytest.raises(ProcessInfoRetrievalError, process_manager.get_process_info("pid1"))`                       |
+| 错误处理 (获取进程列表失败)         | 测试获取进程列表失败时 `ProcessListRetrievalError`                                | `list_processes()`                                    | `pytest.raises(ProcessListRetrievalError, process_manager.list_processes())`                               |
+| 错误处理 (清理进程失败)           | 测试清理进程失败时 `ProcessCleanError`                                          | `clean_processes()`, `IProcess.clean()`               | `pytest.raises(ProcessCleanError, process_manager.clean_processes(["pid1"]))`                              |
+| 错误处理 (初始化失败)            | 测试 ProcessManager 初始化失败时 `IOError` 或 `Exception`                       | `initialize()`                                        | `pytest.raises((IOError, Exception), process_manager.initialize())`                                        |
+| IProcess: 错误处理 (输出获取失败) | 测试获取进程输出失败时 `OutputRetrievalError`                                     | `IProcess.get_output()`                               | `pytest.raises(OutputRetrievalError, async for _ in process.get_output("stdout"))`                         |
+| IProcess: 错误处理 (参数无效)   | 测试 `IProcess.get_output` 中 `output_key` 为空时 `ValueError`               | `IProcess.get_output()`                               | `pytest.raises(ValueError, async for _ in process.get_output(""))`                                         |
+| IProcess: 错误处理 (清理失败)   | 测试清理进程失败时 `ProcessCleanError`                                          | `IProcess.clean()`                                    | `pytest.raises(ProcessCleanError, process.clean())`                                                        |
 
 #### 10.2.2. 集成测试
 
-| 名称                    | 描述                                     | 待测方法                             | 实例调用方式                                         |
-| ----------------------- | ---------------------------------------- | ------------------------------------ | ---------------------------------------------------- |
-| 进程生命周期管理        | 测试进程从启动、运行、停止到清理的完整生命周期 | `start_process()`, `stop_process()`, `clean_processes()` | `pid = await pm.start_process(...); await pm.stop_process(pid); await pm.clean_processes([pid])` |
-| 管道命令执行            | 测试多个命令通过管道符连接的执行         | `execute_pipeline()`                       | `stdout, stderr, code = await pm.execute_pipeline(["ls", "grep"])` |
-| 超时命令的正确终止      | 测试进程管理器能够正确终止超时的命令     | `start_process()`, `IProcess.wait_for_completion()` | `process = await pm.start_process(...); pytest.raises(TimeoutError, await process.wait_for_completion(timeout=0.1))` |
-| 并发进程管理            | 测试同时管理多个并发进程的能力           | `start_process()`, `list_processes()`      | `pids = await asyncio.gather(*[pm.start_process(...) for _ in range(5)])` |
-| 进程输出捕获与过滤      | 测试进程输出的实时捕获和过滤功能         | `start_process()`, `get_process_output()`  | `pid = await pm.start_process(...); output = await pm.get_process_output(pid, tail=10)` |
-| 进程编码支持            | 测试不同字符编码的命令执行和输出处理     | `create_process()`, `execute_with_timeout()` | `process = await pm.create_process(encoding="gbk"); await pm.execute_with_timeout(process)` |
+| 名称        | 描述                          | 待测方法                                                     | 实例调用方式                                                                                                                                                           |
+| --------- | --------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 进程生命周期管理  | 测试进程从启动、运行、停止到清理的完整生命周期     | `start_process()`, `stop_process()`, `clean_processes()` | `pid = await pm.start_process(...); await pm.stop_process(pid); await pm.clean_processes([pid])`                                                                 |
+| 超时命令的正确终止 | 测试进程管理器能够正确终止超时的命令          | `start_process()`, `IProcess.wait_for_completion()`      | `process = await pm.start_process(...); pytest.raises(ProcessTimeoutError, await process.wait_for_completion(timeout=0.1))`                                      |
+| 并发进程管理    | 测试同时管理多个并发进程的能力             | `start_process()`, `list_processes()`                    | `pids = await asyncio.gather(*[pm.start_process(...) for _ in range(5)])`                                                                                        |
+| 进程输出捕获与过滤 | 测试进程输出的实时捕获和过滤功能            | `start_process()`, `get_process_output()`                | `pid = await pm.start_process(...); output = await pm.get_process_output(pid, tail=10)`                                                                          |
+| 进程编码支持    | 测试不同字符编码的命令执行和输出处理          | `create_process()`, `execute_with_timeout()`             | `process = await pm.create_process(encoding="gbk"); await pm.execute_with_timeout(process)`                                                                      |
+| 并发停止/清理进程 | 测试并发停止和清理进程是否导致竞争条件         | `stop_process()`, `clean_processes()`                    | `await asyncio.gather(pm.stop_process("pid1"), pm.clean_processes(["pid1"]))`                                                                                    |
+| 异常恢复与资源释放 | 测试当一个进程失败时，资源是否正确释放，不影响其他进程 | `start_process()`, `clean_processes()`                   | `process_fail = await pm.start_process(["invalid_cmd"], "/tmp", "fail"); await process_fail.wait_for_completion(); await pm.clean_processes([process_fail.pid])` |
 
 ### 10.3. `ICommandExecutor` 测试用例
 
 #### 10.3.1. 单元测试
 
-| 名称                      | 描述                                     | 待测方法                             | 实例调用方式                                         |
-| ------------------------- | ---------------------------------------- | ------------------------------------ | ---------------------------------------------------- |
-| 初始化                    | 测试 CommandExecutor 的初始化            | `initialize()`                       | `await command_executor.initialize()`                |
-| 同步执行命令              | 测试同步执行单个命令并返回结果           | `execute_command()`                  | `result = await command_executor.execute_command(...)` |
-| 启动后台命令              | 测试启动一个后台命令进程                 | `start_background_command()`         | `process = await command_executor.start_background_command(...)` |
-| 获取后台命令日志          | 测试获取后台命令的输出流                 | `get_background_command_logs()`      | `async for line in command_executor.get_background_command_logs(...)` |
-| 停止后台命令              | 测试停止一个正在运行的后台命令           | `stop_background_command()`          | `await command_executor.stop_background_command(pid)` |
-| 列出后台命令              | 测试列出正在运行或已完成的后台命令       | `list_background_commands()`         | `commands = await command_executor.list_background_commands()` |
-| 获取后台命令详情          | 测试获取特定后台命令的详细信息           | `get_background_command_detail()`    | `detail = await command_executor.get_background_command_detail(pid)` |
-| 清理后台命令              | 测试清理已完成或失败的后台命令           | `clean_background_commands()`        | `results = await command_executor.clean_background_commands([pid])` |
-| 关闭                      | 测试 CommandExecutor 的关闭              | `shutdown()`                         | `await command_executor.shutdown()`                  |
-| 获取进程管理器            | 测试获取内部的进程管理器实例             | `get_process_manager()`              | `pm = await command_executor.get_process_manager()` |
-| 错误处理 (命令执行失败) | 测试命令执行失败时的错误处理             | `execute_command()`                  | `pytest.raises(CommandExecutionError, ...)`          |
-| 错误处理 (超时)         | 测试命令执行超时时的错误处理             | `execute_command()`, `start_background_command()` | `pytest.raises(CommandTimeoutError, ...)`            |
-| 错误处理 (进程未找到)   | 测试后台命令不存在时的错误处理           | `get_background_command_logs()`, `stop_background_command()` | `pytest.raises(ProcessNotFoundError, ...)`           |
+| 名称              | 描述                                                          | 待测方法                                                                                            | 实例调用方式                                                                                                                       |
+| --------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 初始化             | 测试 CommandExecutor 的初始化                                     | `initialize()`                                                                                  | `await command_executor.initialize()`                                                                                        |
+| 同步执行命令          | 测试同步执行单个命令并返回结果                                             | `execute_command()`                                                                             | `result = await command_executor.execute_command(...)`                                                                       |
+| 启动后台命令          | 测试启动一个后台命令进程                                                | `start_background_command()`                                                                    | `process = await command_executor.start_background_command(...)`                                                             |
+| 获取后台命令日志        | 测试获取后台命令的输出流                                                | `get_process_logs()`                                                                 | `async for line in command_executor.get_process_logs(...)`                                                        |
+| 停止后台命令          | 测试停止一个正在运行的后台命令                                             | `stop_process()`                                                                     | `await command_executor.stop_process(pid)`                                                                        |
+| 列出后台命令          | 测试列出正在运行或已完成的后台命令                                           | `list_process()`                                                                    | `commands = await command_executor.list_process()`                                                               |
+| 获取后台命令详情        | 测试获取特定后台命令的详细信息                                             | `get_process_detail()`                                                               | `detail = await command_executor.get_process_detail(pid)`                                                         |
+| 清理后台命令          | 测试清理已完成或失败的后台命令                                             | `clean_process()`                                                                   | `results = await command_executor.clean_process([pid])`                                                          |
+| 关闭              | 测试 CommandExecutor 的关闭                                      | `shutdown()`                                                                                    | `await command_executor.shutdown()`                                                                                          |
+| 获取进程管理器         | 测试获取内部的进程管理器实例                                              | `get_process_manager()`                                                                         | `pm = await command_executor.get_process_manager()`                                                                          |
+| 错误处理 (命令执行失败)   | 测试 `execute_command` 命令执行失败时 `CommandExecutionError`        | `execute_command()`                                                                             | `pytest.raises(CommandExecutionError, command_executor.execute_command(["nonexistent_cmd"], "/tmp"))`                        |
+| 错误处理 (同步命令超时)   | 测试 `execute_command` 命令执行超时时 `CommandTimeoutError`          | `execute_command()`                                                                             | `pytest.raises(CommandTimeoutError, command_executor.execute_command(["sleep", "100"], "/tmp", timeout=1))`                  |
+| 错误处理 (启动后台命令失败) | 测试 `start_background_command` 启动失败时 `CommandExecutionError` | `start_background_command()`                                                                    | `pytest.raises(CommandExecutionError, command_executor.start_background_command(["nonexistent_cmd"], "/tmp", "desc"))`       |
+| 错误处理 (后台命令超时)   | 测试 `start_background_command` 超时时 `CommandTimeoutError`     | `start_background_command()`                                                                    | `pytest.raises(CommandTimeoutError, command_executor.start_background_command(["sleep", "100"], "/tmp", "desc", timeout=1))` |
+| 错误处理 (进程未找到)    | 测试操作不存在的后台进程时 `ProcessNotFoundError`                        | `get_process_logs()`, `stop_process()`, `get_process_detail()` | `pytest.raises(ProcessNotFoundError, command_executor.get_process_logs("nonexistent", "stdout"))`                 |
+| 错误处理 (无效参数)     | 测试 `command` 或 `directory` 无效时 `ValueError`                 | `execute_command()`, `start_background_command()`                                               | `pytest.raises(ValueError, command_executor.execute_command([], "/tmp"))`                                                    |
+| 错误处理 (权限错误)     | 测试无足够权限执行命令时 `PermissionError`                              | `execute_command()`, `start_background_command()`                                               | `pytest.raises(PermissionError, command_executor.execute_command(["ls"], "/root"))`                                          |
+| 错误处理 (输出获取失败)   | 测试获取后台命令输出失败时 `OutputRetrievalError`                        | `get_process_logs()`                                                                 | `pytest.raises(OutputRetrievalError, async for _ in command_executor.get_process_logs("pid1", "stdout"))`         |
+| 错误处理 (进程控制失败)   | 测试停止后台进程失败时 `ProcessControlError`                           | `stop_process()`                                                                     | `pytest.raises(ProcessControlError, command_executor.stop_process("pid1"))`                                       |
+| 错误处理 (获取列表失败)   | 测试获取后台命令列表失败时 `ProcessListRetrievalError`                   | `list_process()`                                                                    | `pytest.raises(ProcessListRetrievalError, command_executor.list_process())`                                      |
+| 错误处理 (清理失败)     | 测试清理后台命令失败时 `ProcessCleanError`                             | `clean_process()`                                                                   | `pytest.raises(ProcessCleanError, command_executor.clean_process(["pid1"]))`                                     |
+| 错误处理 (初始化失败)    | 测试 CommandExecutor 初始化失败时 `IOError` 或 `Exception`           | `initialize()`                                                                                  | `pytest.raises((IOError, Exception), command_executor.initialize())`                                                         |
 
 #### 10.3.2. 集成测试
 
-| 名称                      | 描述                                     | 待测方法                             | 实例调用方式                                         |
-| ------------------------- | ---------------------------------------- | ------------------------------------ | ---------------------------------------------------- |
-| 端到端命令执行            | 测试从接收命令到返回结果的完整流程       | `execute_command()`                  | `result = await executor.execute_command(["echo", "test"], directory="/tmp")` |
-| 后台任务生命周期          | 测试后台命令的启动、监控、停止和日志获取 | `start_background_command()`, `stop_background_command()`, `get_background_command_logs()` | `process = await executor.start_background_command(...); await executor.stop_background_command(process.pid);` |
-| 复杂的管道与重定向        | 测试包含管道和文件重定向的复杂命令执行   | `execute_command()`                  | `result = await executor.execute_command(["ls", "|", "grep", ">", "file.txt"])` |
-| 并发后台命令              | 测试同时运行和管理多个后台命令           | `start_background_command()`, `list_background_commands()` | `pids = await asyncio.gather(*[executor.start_background_command(...) for _ in range(3)])` |
-| 环境变量与编码支持        | 测试命令执行时环境变量和字符编码的正确传递 | `execute_command()`, `start_background_command()` | `result = await executor.execute_command(envs={"KEY": "VALUE"}, encoding="gbk")` |
+| 名称                | 描述                                                                       | 待测方法                                                                 | 实例调用方式                                                                                                                                                           |                               |
+| ----------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| 端到端命令执行           | 测试从接收命令到返回结果的完整流程                                                        | `execute_command()`                                                  | `result = await executor.execute_command(["echo", "test"], directory="/tmp")`                                                                                    |                               |
+| 后台任务生命周期          | 测试后台命令的启动、监控、停止和日志获取                                                     | `start_background_command()`, `stop_process()`, `get_process_logs()` | `process = await executor.start_background_command(...); await executor.stop_process(process.pid);`                                                              |                               |
+| 并发后台命令            | 测试同时运行和管理多个后台命令                                                          | `start_background_command()`, `list_process()`                       | `pids = await asyncio.gather(*[executor.start_background_command(...) for _ in range(3)])`                                                                       |                               |
+| 环境变量与编码支持         | 测试命令执行时环境变量和字符编码的正确传递                                                    | `execute_command()`, `start_background_command()`                    | `result = await executor.execute_command(envs={"KEY": "VALUE"}, encoding="gbk")`                                                                                 |                               |
+| 并发停止/清理进程         | 测试并发停止和清理进程是否导致竞争条件                                                      | `stop_process()`, `clean_processes()`                                | `await asyncio.gather(pm.stop_process("pid1"), pm.clean_processes(["pid1"]))`                                                                                    |                               |
+| 异常恢复与资源释放         | 测试当一个进程失败时，资源是否正确释放，不影响其他进程                                              | `start_process()`, `clean_processes()`                               | `process_fail = await pm.start_process(["invalid_cmd"], "/tmp", "fail"); await process_fail.wait_for_completion(); await pm.clean_processes([process_fail.pid])` |                               |
+| 关闭                | 测试 CommandExecutor 的关闭                                                   | `shutdown()`                                                         | `await command_executor.shutdown()`                                                                                                                              |                               |
+| 获取进程管理器           | 测试获取内部的进程管理器实例                                                           | `get_process_manager()`                                              | `pm = await command_executor.get_process_manager()`                                                                                                              |                               |
+| 错误处理 (命令执行失败)     | 测试 `execute_command` 命令执行失败时 `CommandExecutionError`                     | `execute_command()`                                                  | `pytest.raises(CommandExecutionError, command_executor.execute_command(["nonexistent_cmd"], "/tmp"))`                                                            |                               |
+| 错误处理 (同步命令超时)     | 测试 `execute_command` 命令执行超时时 `CommandTimeoutError`                       | `execute_command()`                                                  | `pytest.raises(CommandTimeoutError, command_executor.execute_command(["sleep", "100"], "/tmp", timeout=1))`                                                      |                               |
+| 错误处理 (启动后台命令失败)   | 测试 `start_background_command` 启动失败时 `CommandExecutionError`              | `start_background_command()`                                         | `pytest.raises(CommandExecutionError, command_executor.start_background_command(["nonexistent_cmd"], "/tmp", "desc"))`                                           |                               |
+| 错误处理 (进程未找到)      | 测试操作不存在的后台进程时 `ProcessNotFoundError`                                     | `get_process_logs()`, `stop_process()`, `get_process_detail()`       | `pytest.raises(ProcessNotFoundError, command_executor.get_process_logs("nonexistent", "stdout"))`                                                                |                               |
+| 错误处理 (参数无效: 执行)   | 测试 `execute_command` 中 `command` 或 `directory` 无效时 `ValueError`          | `execute_command()`                                                  | `pytest.raises(ValueError, command_executor.execute_command([], "/tmp"))`                                                                                        |                               |
+| 错误处理 (参数无效: 启动)   | 测试 `start_background_command` 中 `command` 或 `directory` 无效时 `ValueError` | `start_background_command()`                                         | `pytest.raises(ValueError, command_executor.start_background_command([], "/tmp", "desc"))`                                                                       |                               |
+| 错误处理 (参数无效: 获取日志) | 测试 `get_process_logs` 中 `process_id` 或 `output_key` 为空时 `ValueError`     | `get_process_logs()`                                                 | `pytest.raises(ValueError, async for _ in command_executor.get_process_logs("", "stdout"))`                                                                      |                               |
+| 错误处理 (参数无效: 停止)   | 测试 `stop_process` 中 `process_id` 为空时 `ValueError`                        | `stop_process()`                                                     | `pytest.raises(ValueError, command_executor.stop_process(""))`                                                                                                   |                               |
+| 错误处理 (参数无效: 获取详情) | 测试 `get_process_detail` 中 `pid` 为空时 `ValueError`                         | `get_process_detail()`                                               | `pytest.raises(ValueError, command_executor.get_process_detail(""))`                                                                                             |                               |
+| 错误处理 (参数无效: 清理)   | 测试 `clean_process` 中 `process_ids` 为空列表时 `ValueError`                    | `clean_process()`                                                    | `pytest.raises(ValueError, command_executor.clean_process([]))`                                                                                                  |                               |
+| 错误处理 (权限错误)       | 测试无足够权限执行命令时 `PermissionError`                                           | `execute_command()`, `start_background_command()`                    | `pytest.raises(PermissionError, command_executor.execute_command(["ls"], "/root"))`                                                                              |                               |
+| 错误处理 (输出获取失败)     | 测试获取后台命令输出失败时 `OutputRetrievalError`                                     | `get_process_logs()`                                                 | `pytest.raises(OutputRetrievalError, async for _ in command_executor.get_process_logs("pid1", "stdout"))`                                                        |                               |
+| 错误处理 (进程控制失败)     | 测试停止后台进程失败时 `ProcessControlError`                                        | `stop_process()`                                                     | `pytest.raises(ProcessControlError, command_executor.stop_process("pid1"))`                                                                                      |                               |
+| 错误处理 (获取列表失败)     | 测试获取后台命令列表失败时 `ProcessListRetrievalError`                                | `list_process()`                                                     | `pytest.raises(ProcessListRetrievalError, command_executor.list_process())`                                                                                      |                               |
+| 错误处理 (清理失败)       | 测试清理后台命令失败时 `ProcessCleanError`                                          | `clean_process()`                                                    | `pytest.raises(ProcessCleanError, command_executor.clean_process(["pid1"]))`                                                                                     |                               |
+| 错误处理 (初始化失败)      | 测试 CommandExecutor 初始化失败时 `IOError` 或 `Exception`                        | `initialize()`                                                       | `pytest.raises((IOError, Exception), command_executor.initialize())`                                                                                             |                               |
