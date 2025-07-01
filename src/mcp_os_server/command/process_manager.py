@@ -6,6 +6,8 @@ import sys
 import time
 import uuid
 import shutil
+import random
+import string
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Dict, List, Optional
 
@@ -205,7 +207,8 @@ class ProcessManager(IProcessManager):
         if not os.path.isdir(normalized_directory):
             raise CommandExecutionError(f"Directory not found: {directory}")
 
-        process_id = str(uuid.uuid4())
+        # Generate a unique 5-character random PID
+        process_id = self._generate_unique_pid()
         start_time = datetime.now(timezone.utc)
         
         # Prepare environment
@@ -312,6 +315,19 @@ class ProcessManager(IProcessManager):
         
         return process_obj
 
+    def _generate_unique_pid(self) -> str:
+        """Generates a unique 5-character random PID."""
+        retry_count = 0
+        while True:
+            # Generate a 5-character random string (letters and digits)
+            pid = ''.join(random.choices(string.ascii_letters + string.digits, k=5))
+            if pid not in self._processes:
+                return pid
+            else:
+                retry_count += 1
+                if retry_count >= 10:
+                    raise Exception("Failed to generate a unique PID after 10 retries.")
+
     async def _monitor_process(self, process_id: str, process: asyncio.subprocess.Process, timeout: Optional[int], encoding: Optional[str]):
         proc_obj = self._processes[process_id]
         info = proc_obj._info
@@ -343,20 +359,47 @@ class ProcessManager(IProcessManager):
                 info.status = ProcessStatus.TERMINATED
             else:
                 info.status = ProcessStatus.COMPLETED if exit_code == 0 else ProcessStatus.FAILED
+            
+            # 进程已退出，等待输出读取任务完成
+            # 给输出读取任务一些时间来完成剩余的读取
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(stdout_task, stderr_task, return_exceptions=True),
+                    timeout=5  # 给5秒时间来完成输出读取
+                )
+            except asyncio.TimeoutError:
+                # 如果输出读取超时，则取消任务
+                stdout_task.cancel()
+                stderr_task.cancel()
+                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+                
         except asyncio.TimeoutError:
             info.status = ProcessStatus.TERMINATED
             info.error_message = f"Process timed out after {timeout} seconds and was terminated."
             await proc_obj.stop(force=True) # Ensure it's killed
             info.exit_code = process.returncode
+            
+            # 超时情况下立即取消输出读取任务
+            stdout_task.cancel()
+            stderr_task.cancel()
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            
         except Exception as e:
             info.status = ProcessStatus.ERROR
             info.error_message = str(e)
             info.exit_code = process.returncode
+            
+            # 异常情况下也需要等待输出读取完成
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(stdout_task, stderr_task, return_exceptions=True),
+                    timeout=3  # 异常情况下给3秒时间
+                )
+            except asyncio.TimeoutError:
+                stdout_task.cancel()
+                stderr_task.cancel()
+                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
         finally:
-            stdout_task.cancel()
-            stderr_task.cancel()
-            # Ensure output readers are done. This can take a moment.
-            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
             info.end_time = datetime.now(timezone.utc)
             proc_obj._completion_event.set()
             

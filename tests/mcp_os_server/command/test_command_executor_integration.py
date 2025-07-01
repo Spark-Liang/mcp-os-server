@@ -32,7 +32,7 @@ if not CMD_SCRIPT_PATH.is_file():
 @pytest_asyncio.fixture
 async def output_manager(tmp_path: Path) -> AsyncGenerator[OutputManager, None]:
     """Provides a function-scoped OutputManager instance."""
-    manager = OutputManager(base_log_path=tmp_path)
+    manager = OutputManager(output_storage_path=tmp_path.as_posix())
     yield manager
     await manager.shutdown()
 
@@ -217,11 +217,9 @@ async def test_encoding_support(executor: CommandExecutor, tmp_path: Path):
         result = await executor.execute_command(
             command, directory=str(tmp_path), encoding="gbk"
         )
-        # TODO: ProcessManager has a bug in handling non-ASCII output.
-        # The following assertions reflect the current buggy behavior.
-        # This should be changed to `assert text_gbk in result.stdout` when fixed.
+        # 输出捕获已修复，中文字符应该能正确显示
         assert "Basic ASCII and Safe Chinese" in result.stdout
-        assert text_gbk not in result.stdout
+        assert text_gbk in result.stdout  # 修复后应该能获取到中文输出
     except (UnicodeEncodeError, LookupError):
         pytest.skip("System does not support gbk in console for testing")
 
@@ -234,7 +232,7 @@ async def test_shutdown_stops_running_processes(tmp_path: Path):
     log_path = tmp_path / "shutdown_test_logs"
     log_path.mkdir()
 
-    output_manager = OutputManager(base_log_path=log_path)
+    output_manager = OutputManager(output_storage_path=log_path.as_posix())
     process_manager = ProcessManager(output_manager=output_manager, process_retention_seconds=5)
     await process_manager.initialize()
     executor = CommandExecutor(process_manager=process_manager)
@@ -609,3 +607,146 @@ async def test_mcp_command_simulation(executor: CommandExecutor, tmp_path: Path)
     except Exception as e:
         print(f"MCP command simulation test failed: {e}")
         raise
+
+
+@pytest.mark.asyncio
+async def test_complete_output_capture_on_normal_exit(executor: CommandExecutor, tmp_path: Path):
+    """测试正常退出的进程能获取完整的stdout和stderr输出"""
+    # 使用multi_output命令产生大量输出
+    command = [sys.executable, str(CMD_SCRIPT_PATH), "multi_output", "20", "--stderr"]
+    result = await executor.execute_command(command, directory=str(tmp_path))
+
+    # 验证退出码为0
+    assert result.exit_code == 0
+
+    # 验证stdout输出完整性
+    stdout_lines = result.stdout.strip().split('\n')
+    assert len(stdout_lines) == 20, f"Expected 20 stdout lines, got {len(stdout_lines)}"
+    
+    for i in range(20):
+        expected_line = f"stdout line {i+1}: This is output line number {i+1}"
+        assert expected_line in stdout_lines[i], f"Missing expected stdout line: {expected_line}"
+
+    # 验证stderr输出完整性
+    stderr_lines = result.stderr.strip().split('\n')
+    assert len(stderr_lines) == 20, f"Expected 20 stderr lines, got {len(stderr_lines)}"
+    
+    for i in range(20):
+        expected_line = f"stderr line {i+1}: This is error line number {i+1}"
+        assert expected_line in stderr_lines[i], f"Missing expected stderr line: {expected_line}"
+
+
+@pytest.mark.asyncio
+async def test_complete_output_capture_on_abnormal_exit(executor: CommandExecutor, tmp_path: Path):
+    """测试异常退出的进程能获取完整的stdout和stderr输出"""
+    # 使用fail_with_output命令产生输出后异常退出
+    command = [sys.executable, str(CMD_SCRIPT_PATH), "fail_with_output", "5", "42"]
+    result = await executor.execute_command(command, directory=str(tmp_path))
+
+    # 验证退出码为42
+    assert result.exit_code == 42
+
+    # 验证stdout输出完整性
+    stdout_lines = result.stdout.strip().split('\n')
+    # 应该有5行输出 + 1行 "Process is about to fail"
+    assert len(stdout_lines) == 6, f"Expected 6 stdout lines, got {len(stdout_lines)}"
+    
+    for i in range(5):
+        expected_line = f"Output before failure line {i+1}"
+        assert expected_line in stdout_lines[i], f"Missing expected stdout line: {expected_line}"
+    
+    assert "Process is about to fail" in stdout_lines[5]
+
+    # 验证stderr输出完整性
+    stderr_lines = result.stderr.strip().split('\n')
+    # 应该有5行错误输出 + 1行 "Final error message"
+    assert len(stderr_lines) == 6, f"Expected 6 stderr lines, got {len(stderr_lines)}"
+    
+    for i in range(5):
+        expected_line = f"Error before failure line {i+1}"
+        assert expected_line in stderr_lines[i], f"Missing expected stderr line: {expected_line}"
+    
+    assert "Final error message" in stderr_lines[5]
+
+
+@pytest.mark.asyncio
+async def test_background_process_complete_output_capture(executor: CommandExecutor, tmp_path: Path):
+    """测试后台进程正常和异常退出后都能获取完整输出"""
+    
+    # 测试1: 正常退出的后台进程
+    command1 = [sys.executable, str(CMD_SCRIPT_PATH), "multi_output", "10", "--stderr"]
+    process1 = await executor.start_background_command(
+        command=command1,
+        directory=str(tmp_path),
+        description="Background multi output test",
+        labels=["output_test"]
+    )
+
+    # 等待进程完成
+    completed_info1 = await process1.wait_for_completion(timeout=30)
+    assert completed_info1.status == ProcessStatus.COMPLETED
+    assert completed_info1.exit_code == 0
+
+    # 获取完整的stdout输出
+    stdout_logs = [log.text async for log in executor.get_process_logs(process1.pid, "stdout")]
+    assert len(stdout_logs) == 10, f"Expected 10 stdout logs, got {len(stdout_logs)}"
+    
+    for i in range(10):
+        expected_text = f"stdout line {i+1}: This is output line number {i+1}"
+        assert expected_text in stdout_logs[i], f"Missing expected stdout: {expected_text}"
+
+    # 获取完整的stderr输出
+    stderr_logs = [log.text async for log in executor.get_process_logs(process1.pid, "stderr")]
+    assert len(stderr_logs) == 10, f"Expected 10 stderr logs, got {len(stderr_logs)}"
+    
+    for i in range(10):
+        expected_text = f"stderr line {i+1}: This is error line number {i+1}"
+        assert expected_text in stderr_logs[i], f"Missing expected stderr: {expected_text}"
+
+    # 清理进程1
+    await executor.clean_process([process1.pid])
+
+    # 测试2: 异常退出的后台进程
+    command2 = [sys.executable, str(CMD_SCRIPT_PATH), "fail_with_output", "3", "99"]
+    process2 = await executor.start_background_command(
+        command=command2,
+        directory=str(tmp_path),
+        description="Background fail with output test",
+        labels=["output_test"]
+    )
+
+    # 等待进程完成
+    completed_info2 = await process2.wait_for_completion(timeout=30)
+    assert completed_info2.status == ProcessStatus.FAILED
+    assert completed_info2.exit_code == 99
+
+    # 获取完整的stdout输出
+    stdout_logs2 = [log.text async for log in executor.get_process_logs(process2.pid, "stdout")]
+    # 应该有3行 + 1行 "Process is about to fail"
+    assert len(stdout_logs2) == 4, f"Expected 4 stdout logs, got {len(stdout_logs2)}"
+
+    # 获取完整的stderr输出
+    stderr_logs2 = [log.text async for log in executor.get_process_logs(process2.pid, "stderr")]
+    # 应该有3行 + 1行 "Final error message"
+    assert len(stderr_logs2) == 4, f"Expected 4 stderr logs, got {len(stderr_logs2)}"
+
+    # 清理进程2
+    await executor.clean_process([process2.pid])
+
+
+@pytest.mark.asyncio
+async def test_large_output_capture(executor: CommandExecutor, tmp_path: Path):
+    """测试大量输出的完整捕获"""
+    # 使用更大的输出量测试
+    command = [sys.executable, str(CMD_SCRIPT_PATH), "multi_output", "100"]
+    result = await executor.execute_command(command, directory=str(tmp_path))
+
+    assert result.exit_code == 0
+
+    # 验证所有100行都被捕获
+    stdout_lines = result.stdout.strip().split('\n')
+    assert len(stdout_lines) == 100, f"Expected 100 stdout lines, got {len(stdout_lines)}"
+    
+    # 验证第一行和最后一行
+    assert "stdout line 1: This is output line number 1" in stdout_lines[0]
+    assert "stdout line 100: This is output line number 100" in stdout_lines[99]

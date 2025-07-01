@@ -1,7 +1,8 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from datetime import datetime, timedelta
-from mcp_os_server.command.output_logger import OutputManager, YamlOutputLogger
+from mcp_os_server.command.output_logger import YamlOutputLogger, SqliteOutputLogger
+from mcp_os_server.command.output_manager import OutputManager
 from mcp_os_server.command.models import OutputMessageEntry, MessageEntry
 from mcp_os_server.command.exceptions import ProcessNotFoundError, OutputRetrievalError, OutputClearError, StorageError, CommandServerException
 
@@ -165,13 +166,14 @@ async def test_storage_error_handling(mocker, output_manager):
     """测试store_output遇到存储错误时抛出StorageError"""
     process_id = "pid1_storage_error"
     output_key = "stdout"
-    # Pre-create the logger instance in the manager's internal state
-    # This bypasses the _get_logger_for_process call and directly sets up the mock
-    output_manager._loggers[process_id] = {output_key: MagicMock(spec=YamlOutputLogger)}
+    # Modified: Pre-create the logger instance in the manager's internal state
+    # The manager now stores SqliteOutputLogger directly by process_id
+    mock_logger = MagicMock(spec=SqliteOutputLogger) # Mock SqliteOutputLogger
+    output_manager._loggers[process_id] = {output_key: mock_logger} # Assign as nested dict
 
-    mocker.patch.object(output_manager._loggers[process_id][output_key], 'add_message',
+    mocker.patch.object(mock_logger, 'add_message',
                         side_effect=StorageError("Simulated storage error"))
-    mocker.patch.object(output_manager._loggers[process_id][output_key], 'add_messages',
+    mocker.patch.object(mock_logger, 'add_messages',
                         side_effect=StorageError("Simulated storage error"))
 
     with pytest.raises(StorageError):
@@ -182,10 +184,10 @@ async def test_output_retrieval_error_handling(mocker, output_manager):
     """测试get_output遇到获取输出错误时抛出OutputRetrievalError"""
     process_id = "pid1_retrieval_error"
     output_key = "stdout"
-    # Pre-create the logger instance in the manager's internal state
-    output_manager._loggers[process_id] = {output_key: AsyncMock(spec=YamlOutputLogger)}
+    # Modified: Pre-create the logger instance in the manager's internal state
+    mock_logger = AsyncMock(spec=SqliteOutputLogger) # Mock SqliteOutputLogger
+    output_manager._loggers[process_id] = {output_key: mock_logger} # Assign as nested dict
 
-    mock_logger = output_manager._loggers[process_id][output_key]
     mock_logger.get_logs.side_effect = OutputRetrievalError("Simulated retrieval error")
     
     with pytest.raises(OutputRetrievalError):
@@ -197,10 +199,10 @@ async def test_output_clear_error_handling(mocker, output_manager):
     """测试clear_output遇到清理错误时抛出OutputClearError"""
     process_id = "pid1_clear_error"
     output_key = "stdout"
-    # Pre-create the logger instance in the manager's internal state
-    output_manager._loggers[process_id] = {output_key: MagicMock(spec=YamlOutputLogger)}
+    # Modified: Pre-create the logger instance in the manager's internal state
+    mock_logger = MagicMock(spec=SqliteOutputLogger) # Mock SqliteOutputLogger
+    output_manager._loggers[process_id] = {output_key: mock_logger} # Assign as nested dict
 
-    mock_logger = output_manager._loggers[process_id][output_key]
     mock_logger.close.side_effect = OutputClearError("Simulated clear error")
     
     with pytest.raises(OutputClearError):
@@ -210,25 +212,15 @@ async def test_output_clear_error_handling(mocker, output_manager):
 async def test_shutdown_error_handling(mocker, output_manager):
     """测试shutdown遇到错误时抛出Exception"""
     # 模拟 _loggers 字典中存在 logger，并使其 close 方法抛出异常
-    mock_logger_instance_stdout = MagicMock(spec=YamlOutputLogger)
-    mock_logger_instance_stderr = MagicMock(spec=YamlOutputLogger)
+    mock_logger_instance_stdout = MagicMock(spec=SqliteOutputLogger) # Use SqliteOutputLogger
+    mock_logger_instance_stderr = MagicMock(spec=SqliteOutputLogger) # Need another mock for stderr
     mock_logger_instance_stdout.close.side_effect = Exception("Simulated stdout shutdown error")
     mock_logger_instance_stderr.close.side_effect = Exception("Simulated stderr shutdown error")
 
     output_manager._loggers["dummy_pid"] = {
         "stdout": mock_logger_instance_stdout,
         "stderr": mock_logger_instance_stderr
-    }
-
-    # Modify the shutdown method to re-raise the exception for testing purposes
-    # This part is no longer needed as we are directly mocking the inner logger
-    # original_shutdown = output_manager.shutdown
-    # async def mock_shutdown():
-    #     try:
-    #         await original_shutdown()
-    #     except Exception as e:
-    #         raise e
-    # output_manager.shutdown = mock_shutdown
+    } # Assign as nested dict
 
     with pytest.raises(Exception):
         # Call the actual shutdown on the instance, which will then call mocked close on loggers

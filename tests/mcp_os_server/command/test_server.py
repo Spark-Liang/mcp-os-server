@@ -179,7 +179,7 @@ def validate_error_message_format(text: str, error_type: str) -> bool:
 @pytest_asyncio.fixture
 async def output_manager(tmp_path: Path) -> AsyncGenerator[OutputManager, None]:
     """Provides a function-scoped OutputManager instance."""
-    manager = OutputManager(base_log_path=tmp_path)
+    manager = OutputManager(output_storage_path=tmp_path.as_posix())
     yield manager
     await manager.shutdown()
 

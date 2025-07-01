@@ -70,12 +70,16 @@ class CommandExecutor(ICommandExecutor):
         end_time = time.monotonic()
 
         # Collect output
-        stdout_output = process.get_output("stdout", tail=limit_lines or self._limit_lines)
+        # 如果明确指定了 limit_lines，则使用 tail 限制输出行数
+        # 否则获取所有输出
+        tail_limit = limit_lines if limit_lines is not None else None
+        
+        stdout_output = process.get_output("stdout", tail=tail_limit)
         if asyncio.iscoroutine(stdout_output):
             stdout_output = await stdout_output
         stdout_lines = [log.text async for log in stdout_output]
 
-        stderr_output = process.get_output("stderr", tail=limit_lines or self._limit_lines)
+        stderr_output = process.get_output("stderr", tail=tail_limit)
         if asyncio.iscoroutine(stderr_output):
             stderr_output = await stderr_output
         stderr_lines = [log.text async for log in stderr_output]

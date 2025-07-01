@@ -10,6 +10,7 @@ import yaml
 from mcp_os_server.command.interfaces import IOutputLogger
 from mcp_os_server.command.models import MessageEntry
 from mcp_os_server.command.output_logger import YamlOutputLogger
+from mcp_os_server.command.output_logger import SqliteOutputLogger
 
 
 class BaseTestOutputLogger:
@@ -177,4 +178,56 @@ class TestYamlOutputLogger(BaseTestOutputLogger):
         all_logs = self._read_yaml_file(temp_log_file)
         assert len(all_logs) == 2
         assert all_logs[0]['text'] == "A message to create the file."
-        assert all_logs[1]['text'] == "Second message." 
+        assert all_logs[1]['text'] == "Second message."
+
+
+class TestSqliteOutputLogger(BaseTestOutputLogger):
+    """
+    Tests for the SqliteOutputLogger implementation.
+    This class inherits general interface tests from BaseTestOutputLogger
+    and adds implementation-specific tests.
+    """
+
+    @pytest.fixture
+    def temp_db_file(self) -> Generator[str, None, None]:
+        """Provides a temporary file path for SQLite database."""
+        fd, file_path = tempfile.mkstemp(suffix=".db", text=False)
+        os.close(fd)
+        yield file_path
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+    @pytest.fixture
+    def logger(self, temp_db_file: str) -> Generator[IOutputLogger, None, None]:
+        """Fixture to create a SqliteOutputLogger instance and ensure it's closed."""
+        log_instance = SqliteOutputLogger(temp_db_file)
+        yield log_instance
+        log_instance.close()
+
+    @pytest.mark.asyncio
+    async def test_multi_sub_id_isolation(self, temp_db_file: str):
+        """Test that different sub_ids create isolated tables."""
+        logger1 = SqliteOutputLogger(temp_db_file, sub_id="proc1_stdout")
+        logger2 = SqliteOutputLogger(temp_db_file, sub_id="proc2_stdout")
+        logger3 = SqliteOutputLogger(temp_db_file, sub_id="proc1_stderr")
+
+        logger1.add_message("Message for proc1 stdout")
+        logger2.add_message("Message for proc2 stdout")
+        logger3.add_message("Message for proc1 stderr")
+
+        logger1.close()
+        logger2.close()
+        logger3.close()
+
+        # Verify isolation
+        retrieved_logs_1 = [log async for log in SqliteOutputLogger(temp_db_file, sub_id="proc1_stdout").get_logs()]
+        assert len(retrieved_logs_1) == 1
+        assert retrieved_logs_1[0].text == "Message for proc1 stdout"
+
+        retrieved_logs_2 = [log async for log in SqliteOutputLogger(temp_db_file, sub_id="proc2_stdout").get_logs()]
+        assert len(retrieved_logs_2) == 1
+        assert retrieved_logs_2[0].text == "Message for proc2 stdout"
+        
+        retrieved_logs_3 = [log async for log in SqliteOutputLogger(temp_db_file, sub_id="proc1_stderr").get_logs()]
+        assert len(retrieved_logs_3) == 1
+        assert retrieved_logs_3[0].text == "Message for proc1 stderr" 

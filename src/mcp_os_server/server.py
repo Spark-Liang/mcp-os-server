@@ -132,7 +132,7 @@ async def create_command_executor(
 ) -> CommandExecutor:
     """Create and initialize a CommandExecutor instance."""
     # Create OutputManager
-    output_manager = OutputManager(base_log_path=Path(output_storage_path))
+    output_manager = OutputManager(output_storage_path=Path(output_storage_path).absolute().as_posix())
     
     # Create ProcessManager
     process_manager = ProcessManager(

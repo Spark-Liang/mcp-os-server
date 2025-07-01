@@ -115,6 +115,38 @@ def loop():
     print("Loop finished naturally.")
 
 
+def multi_output():
+    # 实现一个产生大量stdout和stderr输出的命令
+    parser = argparse.ArgumentParser(description="Multi output command")
+    parser.add_argument("lines", type=int, default=10, nargs="?", help="Number of lines to output")
+    parser.add_argument("--stderr", action="store_true", help="Also output to stderr")
+    args = parser.parse_args(sys.argv[1:])
+    
+    for i in range(args.lines):
+        print(f"stdout line {i+1}: This is output line number {i+1}")
+        if args.stderr:
+            print(f"stderr line {i+1}: This is error line number {i+1}", file=sys.stderr)
+        # 短暂延迟，模拟真实程序的输出模式
+        time.sleep(0.01)
+
+
+def fail_with_output():
+    # 实现一个产生输出后以非零退出码退出的命令
+    parser = argparse.ArgumentParser(description="Fail with output command")
+    parser.add_argument("lines", type=int, default=5, nargs="?", help="Number of lines to output before failing")
+    parser.add_argument("exit_code", type=int, default=1, nargs="?", help="Exit code to use")
+    args = parser.parse_args(sys.argv[1:])
+    
+    for i in range(args.lines):
+        print(f"Output before failure line {i+1}")
+        print(f"Error before failure line {i+1}", file=sys.stderr)
+        time.sleep(0.01)
+    
+    print("Process is about to fail")
+    print("Final error message", file=sys.stderr)
+    sys.exit(args.exit_code)
+
+
 # 命令路由
 if __name__ == "__main__":
     # Simplified command detection from script name
@@ -122,7 +154,7 @@ if __name__ == "__main__":
 
     # Command detection from arguments
     if len(sys.argv) > 1 and sys.argv[1] in [
-        "echo", "grep", "sleep", "cat", "binary_cat", "exit", "encode_echo", "loop"
+        "echo", "grep", "sleep", "cat", "binary_cat", "exit", "encode_echo", "loop", "multi_output", "fail_with_output"
     ]:
         command = sys.argv[1]
         # Re-arrange sys.argv for argparse in functions
@@ -146,10 +178,14 @@ if __name__ == "__main__":
         encode_echo()
     elif command == "loop":
         loop()
+    elif command == "multi_output":
+        multi_output()
+    elif command == "fail_with_output":
+        fail_with_output()
     else:
         print(f"Unknown command: {command}", file=sys.stderr)
         print(
-            "Available commands: echo, encode_echo, grep, sleep, cat, binary_cat, exit, loop",
+            "Available commands: echo, encode_echo, grep, sleep, cat, binary_cat, exit, loop, multi_output, fail_with_output",
             file=sys.stderr,
         )
         sys.exit(1)
