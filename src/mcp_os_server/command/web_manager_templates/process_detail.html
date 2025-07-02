@@ -317,7 +317,7 @@
             document.getElementById('loadingMessage').style.display = 'block';
             document.getElementById('processDetails').style.display = 'none';
 
-            fetch(`${urlPrefix}/api/process/${processId}`)
+            fetch(`${urlPrefix}/api/processes/${processId}`)
                 .then(response => {
                     if (!response.ok) {
                         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -328,7 +328,7 @@
                     if (data.error) {
                         throw new Error(data.error);
                     }
-                    displayProcessDetails(data);
+                    displayProcessDetails(data.data);
                 })
                 .catch(error => {
                     console.error('获取进程详情失败:', error);
@@ -461,7 +461,7 @@
                 return;
             }
 
-            fetch(`${urlPrefix}/api/process/${processId}/stop`, {
+            fetch(`${urlPrefix}/api/processes/${processId}/stop`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -489,7 +489,7 @@
                 return;
             }
 
-            fetch(`${urlPrefix}/api/process/${processId}/clean`, {
+            fetch(`${urlPrefix}/api/processes/${processId}/clean`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -524,14 +524,14 @@
             }
 
             const params = new URLSearchParams();
-            params.append('stdout', showStdout.toString());
-            params.append('stderr', showStderr.toString());
+            params.append('with_stdout', showStdout.toString());
+            params.append('with_stderr', showStderr.toString());
             params.append('tail', tailLines.toString());
 
             document.getElementById('outputDisplay').innerHTML = 
                 '<div class="loading">正在加载输出...</div>';
 
-            fetch(`${urlPrefix}/api/process/${processId}/output?${params.toString()}`)
+            fetch(`${urlPrefix}/api/processes/${processId}/output?${params.toString()}`)
                 .then(response => {
                     if (!response.ok) {
                         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -542,7 +542,7 @@
                     if (data.error) {
                         throw new Error(data.error);
                     }
-                    displayOutput(data, showStdout, showStderr);
+                    displayOutput(data.data, showStdout, showStderr);
                 })
                 .catch(error => {
                     console.error('获取输出失败:', error);
@@ -560,7 +560,7 @@
                 content += '=== 标准输出 ===\n';
                 data.stdout.forEach(entry => {
                     const timestamp = formatDateTime(entry.timestamp);
-                    content += `[${timestamp}] ${entry.text}\n`;
+                    content += `[${timestamp}] ${entry.content}\n`;
                 });
                 content += '\n';
             }
@@ -569,7 +569,7 @@
                 content += '=== 错误输出 ===\n';
                 data.stderr.forEach(entry => {
                     const timestamp = formatDateTime(entry.timestamp);
-                    content += `[${timestamp}] ${entry.text}\n`;
+                    content += `[${timestamp}] ${entry.content}\n`;
                 });
                 content += '\n';
             }

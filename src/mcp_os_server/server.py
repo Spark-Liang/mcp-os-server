@@ -186,7 +186,7 @@ async def _run_filesystem_server(
     
     # Create filesystem server
     try:
-        mcp = create_filesystem_server(allowed_dirs)
+        mcp = create_filesystem_server(allowed_dirs, host=host, port=port)
     except Exception as e:
         logger.error(f"Failed to initialize filesystem server: {e}")
         return
@@ -296,7 +296,7 @@ async def _run_unified_server(
             enable_web_manager = False
     
     # Create unified FastMCP instance
-    mcp = FastMCP("mcp-unified-server")
+    mcp = FastMCP("mcp-unified-server", host=host, port=port)
     
     # Define command server tools if allowed
     if command_executor and allowed_commands:
@@ -305,7 +305,6 @@ async def _run_unified_server(
             mcp=mcp,
             command_executor=command_executor,
             allowed_commands=allowed_commands,
-            process_retention_seconds=process_retention_seconds,
             default_encoding=default_encoding,
         )
     
@@ -532,7 +531,7 @@ async def _run_command_server(
             enable_web_manager = False
     
     # Create FastMCP instance
-    mcp = FastMCP("mcp-command-server")
+    mcp = FastMCP("mcp-command-server", host=host, port=port)
     
     # Define MCP tools
     from .command.server import define_mcp_server
@@ -540,7 +539,6 @@ async def _run_command_server(
         mcp=mcp,
         command_executor=command_executor,
         allowed_commands=allowed_commands,
-        process_retention_seconds=process_retention_seconds,
         default_encoding=default_encoding,
     )
     

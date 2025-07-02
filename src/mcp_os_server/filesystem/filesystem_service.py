@@ -5,8 +5,11 @@ import glob
 import logging
 import os
 import shutil
+import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+import fnmatch
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +30,8 @@ class FilesystemService:
         # 标准化路径并确保是绝对路径
         self.allowed_dirs = []
         for dir_path in allowed_dirs:
-            abs_path = os.path.abspath(dir_path)
+            # 将所有允许的目录转换为Path对象并进行标准化处理
+            abs_path = Path(dir_path).resolve()
             self.allowed_dirs.append(abs_path)
         logger.info(f"初始化文件系统服务，允许的目录: {self.allowed_dirs}")
 
@@ -41,16 +45,16 @@ class FilesystemService:
         Returns:
             是否允许访问该路径
         """
-        abs_path = os.path.abspath(path)
+        # 将传入路径转换为Path对象并标准化
+        abs_path = Path(path).resolve()
 
-        for allowed_dir in self.allowed_dirs:
+        for allowed_dir_path in self.allowed_dirs:
             try:
-                # 使用os.path.commonpath检查路径是否在允许的目录下
-                common_path = os.path.commonpath([abs_path, allowed_dir])
-                if common_path == allowed_dir:
+                # 使用Path.is_relative_to进行检查
+                if abs_path.is_relative_to(allowed_dir_path):
                     return True
             except ValueError:
-                # 路径在不同的驱动器上（Windows）
+                # Path.is_relative_to可能会在不同驱动器上抛出ValueError，这里捕获并跳过
                 continue
 
         return False
@@ -233,7 +237,7 @@ class FilesystemService:
                 should_exclude = False
                 if exclude_patterns:
                     for exclude_pattern in exclude_patterns:
-                        if glob.fnmatch.fnmatch(
+                        if fnmatch.fnmatch(
                             os.path.basename(match), exclude_pattern
                         ):
                             should_exclude = True
@@ -286,7 +290,8 @@ class FilesystemService:
         Returns:
             允许访问的目录列表
         """
-        return self.allowed_dirs.copy()
+        # 将Path对象转换回字符串列表返回
+        return [str(p) for p in self.allowed_dirs.copy()]
 
     async def edit_file(
         self, path: str, edits: List[Dict[str, str]], dry_run: bool = False

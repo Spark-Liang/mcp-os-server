@@ -7,12 +7,13 @@ import tempfile
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import AsyncGenerator, List, Sequence, Optional
+from typing import AsyncGenerator, List, Sequence, Optional, Union
 
 import pytest
 import pytest_asyncio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.client.sse import sse_client
 from mcp.types import TextContent
 
 
@@ -214,8 +215,27 @@ def validate_error_message_format(text: str, error_type: str) -> bool:
     return pattern in text
 
 
-class TestCommandServerIntegration:
-    """Integration tests for the MCP Command Server via MCP protocol."""
+class BaseCommandServerIntegrationTest(ABC):
+    """Abstract base class for command server integration tests."""
+
+    @abstractmethod
+    async def new_mcp_client_session(self, 
+                                     allowed_commands: str,
+                                     output_storage_path: str,
+                                     process_retention_seconds: Optional[int] = None) -> AsyncGenerator[ClientSession, None]:
+        """
+        Abstract factory method that must be implemented by subclasses to create
+        an MCP client session with specified parameters.
+        
+        Args:
+            allowed_commands: Comma-separated list of allowed commands
+            output_storage_path: Path for output storage
+            process_retention_seconds: Process retention time in seconds
+            
+        Yields:
+            ClientSession: An MCP client session instance
+        """
+        ...
 
     @pytest_asyncio.fixture(scope="function")
     async def mcp_client_session(self) -> AsyncGenerator[ClientSession, None]:
@@ -223,109 +243,25 @@ class TestCommandServerIntegration:
         Pytest fixture to start and manage the lifecycle of the MCP command server
         and provide an MCP client session for tests.
         """
-        # Get the absolute path to the project root
-        project_root = Path(__file__).parent.parent.parent.resolve()
+        import tempfile
+        import sys
         
-        # Set up environment variables for the command server
-        env = os.environ.copy()
+        # Set up default parameters
         allowed_commands = "echo,ls,sleep,cat,grep,pwd," + sys.executable + ",nonexistent-command-12345"
         
         # Add npm to allowed commands if npm testing is enabled
-        if env.get('TEST_NPM_ENABLED', '').lower() in ('1', 'true', 'yes'):
+        if os.environ.get('TEST_NPM_ENABLED', '').lower() in ('1', 'true', 'yes'):
             allowed_commands += ",npm"
             
-        env["ALLOWED_COMMANDS"] = allowed_commands
-        env["OUTPUT_STORAGE_PATH"] = str(tempfile.mkdtemp())
+        output_storage_path = str(tempfile.mkdtemp())
         
-        cmd, args = _get_server_start_params(
-            server_type="command",
-            mode="stdio",
-            project_root=project_root,
-            env=env
-        )
-
-        server_params = StdioServerParameters(
-            command=cmd,
-            args=args,
-            env=env,
-        )
-        print(f"Starting MCP command server from project: {project_root}", file=sys.stderr)
-        print(f"Environment: ALLOWED_COMMANDS={env.get('ALLOWED_COMMANDS')}", file=sys.stderr)
-        print(f"Using temp output dir: {env['OUTPUT_STORAGE_PATH']}", file=sys.stderr)
-
-        session = None
-        stdio_context = None
-        
-        try:
-            print("Initializing MCP session...", file=sys.stderr)
-            stdio_context = stdio_client(server_params)
-            
-            # Add longer timeout for session initialization
-            read, write = await asyncio.wait_for(stdio_context.__aenter__(), timeout=30.0)
-            print("Stdio streams established", file=sys.stderr)
-            
-            # Create session
-            session = ClientSession(read, write)
-            await session.__aenter__()
-            print("Client session created", file=sys.stderr)
-            
-            # Initialize session with retry logic and longer timeout
-            max_retries = 5
-            for attempt in range(max_retries):
-                try:
-                    print(f"Attempting session initialization (attempt {attempt + 1})...", file=sys.stderr)
-                    await asyncio.wait_for(session.initialize(), timeout=20.0)
-                    print("MCP Client Session initialized.", file=sys.stderr)
-                    break
-                except asyncio.TimeoutError:
-                    print(f"Session initialization timeout on attempt {attempt + 1}", file=sys.stderr)
-                    if attempt == max_retries - 1:
-                        raise
-                    await asyncio.sleep(0.5)
-                except Exception as e:
-                    if attempt == max_retries - 1:
-                        print(f"Failed to initialize session after {max_retries} attempts: {e}", file=sys.stderr)
-                        raise
-                    print(f"Session initialization attempt {attempt + 1} failed: {e}, retrying...", file=sys.stderr)
-                    await asyncio.sleep(0.5)
-            
-            yield session  # Provide the session to the tests
-            
-        except Exception as e:
-            print(f"Error in MCP client session setup: {e}", file=sys.stderr)
-            import traceback
-            print(f"Full traceback: {traceback.format_exc()}", file=sys.stderr)
-            raise
-        finally:
-            # Improved cleanup with proper ordering and exception handling
-            cleanup_errors = []
-            
-            # Step 1: Close the session first
-            if session is not None:
-                try:
-                    # Give any ongoing operations time to complete
-                    await asyncio.sleep(0.1)
-                    await session.__aexit__(None, None, None)
-                    print("Session cleaned up successfully", file=sys.stderr)
-                except Exception as e:
-                    cleanup_errors.append(f"Session cleanup error: {e}")
-            
-            # Step 2: Close the stdio context
-            if stdio_context is not None:
-                try:
-                    # Give the server time to process the session close
-                    await asyncio.sleep(0.2)
-                    await stdio_context.__aexit__(None, None, None)
-                    print("Stdio context cleaned up successfully", file=sys.stderr)
-                except Exception as e:
-                    cleanup_errors.append(f"Stdio cleanup error: {e}")
-            
-            # Report any cleanup errors but don't raise them
-            if cleanup_errors:
-                for error in cleanup_errors:
-                    print(f"Warning: {error}", file=sys.stderr)
-                    
-            print("MCP Client Session closed and server stopped.", file=sys.stderr)
+        # Use the abstract factory method implemented by subclasses
+        async for session in self.new_mcp_client_session(
+            allowed_commands=allowed_commands,
+            output_storage_path=output_storage_path,
+            process_retention_seconds=None
+        ):
+            yield session
 
     async def call_tool(self, session: ClientSession, tool_name: str, arguments: dict) -> Sequence[TextContent]:
         """Helper method to call a tool via MCP ClientSession with retry logic."""
@@ -576,6 +512,133 @@ class TestCommandServerIntegration:
         print("✅ Integration command execute timeout test passed", file=sys.stderr)
 
     @pytest.mark.asyncio
+    async def test_timeout_process_retention_and_logs(self, mcp_client_session: ClientSession, tmp_path):
+        """集成测试：验证在 process retention time 内，进程即使超时了，也能查到信息获取到日志"""
+        print("Running test_timeout_process_retention_and_logs...", file=sys.stderr)
+        
+        # Step 1: 启动一个会超时的后台进程
+        start_result = await self.call_tool(
+            mcp_client_session,
+            "command_bg_start",
+            {
+                "command": sys.executable,
+                "args": [str(CMD_SCRIPT_PATH), "sleep", "10"],  # 长时间运行的进程
+                "directory": str(tmp_path),
+                "description": "Test timeout process retention",
+                "labels": ["timeout-test"],
+                "stdin": None,
+                "timeout": 2,  # 设置较短的超时时间，让进程超时
+                "envs": None,
+            }
+        )
+
+        assert isinstance(start_result, (list, tuple))
+        assert len(start_result) == 1
+        assert isinstance(start_result[0], TextContent)
+        
+        # 验证进程启动并提取 PID
+        pid = validate_process_started_format(start_result[0].text)
+        assert pid
+        print(f"Started process with PID: {pid}", file=sys.stderr)
+        
+        # Step 2: 等待进程超时（等待时间略长于超时时间）
+        await asyncio.sleep(3)
+        print("Process should have timed out by now", file=sys.stderr)
+        
+        # Step 3: 验证即使进程超时，仍然可以获取进程详情
+        try:
+            detail_result = await self.call_tool(
+                mcp_client_session,
+                "command_ps_detail",
+                {
+                    "pid": pid
+                }
+            )
+            
+            assert isinstance(detail_result, (list, tuple))
+            assert len(detail_result) == 1
+            assert isinstance(detail_result[0], TextContent)
+            
+            # 验证进程详情格式正确
+            assert validate_process_detail_format(detail_result[0].text, pid)
+            print("✓ Process details retrieved successfully after timeout", file=sys.stderr)
+            
+            # 验证进程信息包含超时相关状态
+            detail_text = detail_result[0].text
+            assert "Test timeout process retention" in detail_text
+            assert "timeout-test" in detail_text
+            print("✓ Process metadata correctly preserved", file=sys.stderr)
+            
+        except Exception as e:
+            print(f"Failed to get process details: {e}", file=sys.stderr)
+            raise
+        
+        # Step 4: 验证即使进程超时，仍然可以获取进程日志
+        try:
+            logs_result = await self.call_tool(
+                mcp_client_session,
+                "command_ps_logs",
+                {
+                    "pid": pid,
+                    "with_stdout": True,
+                    "with_stderr": True,
+                    "tail": 10
+                }
+            )
+            
+            assert isinstance(logs_result, (list, tuple))
+            assert len(logs_result) >= 1  # 至少应该有一些输出
+            assert isinstance(logs_result[0], TextContent)
+            
+            # 验证日志内容不为空（超时进程可能产生了一些输出）
+            logs_text = logs_result[0].text
+            assert len(logs_text.strip()) > 0, "Expected some log output even from timed out process"
+            print("✓ Process logs retrieved successfully after timeout", file=sys.stderr)
+            print(f"Log content preview: {logs_text[:100]}...", file=sys.stderr)
+            
+        except Exception as e:
+            print(f"Failed to get process logs: {e}", file=sys.stderr)
+            raise
+        
+        # Step 5: 验证可以列出进程（在保留期内）
+        try:
+            list_result = await self.call_tool(
+                mcp_client_session,
+                "command_ps_list",
+                {
+                    "labels": ["timeout-test"],
+                    "status": None
+                }
+            )
+            
+            assert isinstance(list_result, (list, tuple))
+            assert len(list_result) == 1
+            assert isinstance(list_result[0], TextContent)
+            
+            # 验证进程在列表中
+            list_text = list_result[0].text
+            assert pid in list_text
+            assert "timeout-test" in list_text
+            print("✓ Timed out process found in process list", file=sys.stderr)
+            
+        except Exception as e:
+            print(f"Failed to list processes: {e}", file=sys.stderr)
+            raise
+        
+        # Cleanup: 尝试停止进程（如果还在运行）并清理
+        try:
+            await self.call_tool(mcp_client_session, "command_ps_stop", {"pid": pid, "force": True})
+        except Exception:
+            pass  # 如果进程已经停止，忽略错误
+        
+        try:
+            await self.call_tool(mcp_client_session, "command_ps_clean", {"pids": [pid]})
+        except Exception:
+            pass  # 清理可能失败，但不影响测试结果
+        
+        print("✅ Integration timeout process retention and logs test passed", file=sys.stderr)
+
+    @pytest.mark.asyncio
     async def test_command_execute_npm_optional(self, mcp_client_session: ClientSession, tmp_path):
         """可选集成测试：验证通过 MCP command_execute 运行 npm --version - 需要设置环境变量 TEST_NPM_ENABLED=1 启用
         
@@ -635,22 +698,139 @@ class TestCommandServerIntegration:
                 raise
 
 
+class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
+    """Integration tests for the MCP Command Server via STDIO protocol."""
 
-
-class TestCommandServerSSEIntegration:
-    """Integration tests for the MCP Command Server via SSE protocol."""
-
-    @pytest_asyncio.fixture(scope="function")
-    async def mcp_sse_session(self) -> AsyncGenerator[tuple[str, int], None]:
+    async def new_mcp_client_session(self, 
+                                     allowed_commands: str,
+                                     output_storage_path: str,
+                                     process_retention_seconds: Optional[int] = None) -> AsyncGenerator[ClientSession, None]:
         """
-        Pytest fixture to start the MCP command server in SSE mode.
+        Factory method to create MCP client session for STDIO mode.
         """
         # Get the absolute path to the project root
         project_root = Path(__file__).parent.parent.parent.resolve()
         
         # Set up environment variables for the command server
         env = os.environ.copy()
-        env["ALLOWED_COMMANDS"] = "echo,ls,sleep,cat,grep,pwd," + sys.executable + ",nonexistent-command-12345"
+        env["ALLOWED_COMMANDS"] = allowed_commands
+        env["OUTPUT_STORAGE_PATH"] = output_storage_path
+        if process_retention_seconds is not None:
+            env["PROCESS_RETENTION_SECONDS"] = str(process_retention_seconds)
+        
+        cmd, args = _get_server_start_params(
+            server_type="command",
+            mode="stdio",
+            project_root=project_root,
+            env=env
+        )
+
+        server_params = StdioServerParameters(
+            command=cmd,
+            args=args,
+            env=env,
+        )
+        print(f"Starting MCP command server from project: {project_root}", file=sys.stderr)
+        print(f"Environment: ALLOWED_COMMANDS={env.get('ALLOWED_COMMANDS')}", file=sys.stderr)
+        print(f"Using temp output dir: {env['OUTPUT_STORAGE_PATH']}", file=sys.stderr)
+
+        session = None
+        stdio_context = None
+        
+        try:
+            print("Initializing MCP session...", file=sys.stderr)
+            stdio_context = stdio_client(server_params)
+            
+            # Add longer timeout for session initialization
+            read, write = await asyncio.wait_for(stdio_context.__aenter__(), timeout=30.0)
+            print("Stdio streams established", file=sys.stderr)
+            
+            # Create session
+            session = ClientSession(read, write)
+            await session.__aenter__()
+            print("Client session created", file=sys.stderr)
+            
+            # Initialize session with retry logic and longer timeout
+            max_retries = 5
+            for attempt in range(max_retries):
+                try:
+                    print(f"Attempting session initialization (attempt {attempt + 1})...", file=sys.stderr)
+                    await asyncio.wait_for(session.initialize(), timeout=20.0)
+                    print("MCP Client Session initialized.", file=sys.stderr)
+                    break
+                except asyncio.TimeoutError:
+                    print(f"Session initialization timeout on attempt {attempt + 1}", file=sys.stderr)
+                    if attempt == max_retries - 1:
+                        raise
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        print(f"Failed to initialize session after {max_retries} attempts: {e}", file=sys.stderr)
+                        raise
+                    print(f"Session initialization attempt {attempt + 1} failed: {e}, retrying...", file=sys.stderr)
+                    await asyncio.sleep(0.5)
+            
+            yield session  # Provide the session to the tests
+            
+        except Exception as e:
+            print(f"Error in MCP client session setup: {e}", file=sys.stderr)
+            import traceback
+            print(f"Full traceback: {traceback.format_exc()}", file=sys.stderr)
+            raise
+        finally:
+            # Improved cleanup with proper ordering and exception handling
+            cleanup_errors = []
+            
+            # Step 1: Close the session first
+            if session is not None:
+                try:
+                    # Give any ongoing operations time to complete
+                    await asyncio.sleep(0.1)
+                    await session.__aexit__(None, None, None)
+                    print("Session cleaned up successfully", file=sys.stderr)
+                except Exception as e:
+                    cleanup_errors.append(f"Session cleanup error: {e}")
+            
+            # Step 2: Close the stdio context
+            if stdio_context is not None:
+                try:
+                    # Give the server time to process the session close
+                    await asyncio.sleep(0.2)
+                    await stdio_context.__aexit__(None, None, None)
+                    print("Stdio context cleaned up successfully", file=sys.stderr)
+                except Exception as e:
+                    cleanup_errors.append(f"Stdio cleanup error: {e}")
+            
+            # Report any cleanup errors but don't raise them
+            if cleanup_errors:
+                for error in cleanup_errors:
+                    print(f"Warning: {error}", file=sys.stderr)
+                    
+            print("MCP Client Session closed and server stopped.", file=sys.stderr)
+
+
+
+
+class TestCommandServerSSEIntegration(BaseCommandServerIntegrationTest):
+    """Integration tests for the MCP Command Server via SSE protocol."""
+
+    async def new_mcp_client_session(self, 
+                                     allowed_commands: str,
+                                     output_storage_path: str,
+                                     process_retention_seconds: Optional[int] = None) -> AsyncGenerator[ClientSession, None]:
+        """
+        Factory method to create MCP client session for SSE mode.
+        Uses official MCP SSE client to connect to SSE server.
+        """
+        # Get the absolute path to the project root
+        project_root = Path(__file__).parent.parent.parent.resolve()
+        
+        # Set up environment variables for the command server
+        env = os.environ.copy()
+        env["ALLOWED_COMMANDS"] = allowed_commands
+        env["OUTPUT_STORAGE_PATH"] = output_storage_path
+        if process_retention_seconds is not None:
+            env["PROCESS_RETENTION_SECONDS"] = str(process_retention_seconds)
         
         # Use a random available port
         import socket
@@ -680,68 +860,90 @@ class TestCommandServerSSEIntegration:
             ], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             
             # Wait a bit for server to start
-            await asyncio.sleep(2)
+            await asyncio.sleep(5)
+            
+            # Check if process is still running
+            if server_process.poll() is not None:
+                stdout, stderr = server_process.communicate()
+                print(f"SSE Server failed to start. Exit code: {server_process.returncode}", file=sys.stderr)
+                try:
+                    stdout_text = stdout.decode('utf-8')
+                except UnicodeDecodeError:
+                    stdout_text = stdout.decode('gbk', errors='replace')
+                try:
+                    stderr_text = stderr.decode('utf-8')
+                except UnicodeDecodeError:
+                    stderr_text = stderr.decode('gbk', errors='replace')
+                print(f"Stdout: {stdout_text}", file=sys.stderr)
+                print(f"Stderr: {stderr_text}", file=sys.stderr)
+                raise RuntimeError(f"SSE Server failed to start with exit code {server_process.returncode}")
             
             print(f"SSE Server started on port {port}", file=sys.stderr)
-            yield "127.0.0.1", port
+            print(f"Environment: ALLOWED_COMMANDS={env.get('ALLOWED_COMMANDS')}", file=sys.stderr)
+            print(f"Using output dir: {env['OUTPUT_STORAGE_PATH']}", file=sys.stderr)
+            
+            # Wait for server to be ready by checking if it responds to HTTP requests
+            import httpx
+            server_ready = False
+            for attempt in range(10):
+                try:
+                    async with httpx.AsyncClient(timeout=2.0) as client:
+                        response = await client.get(f"http://127.0.0.1:{port}/web")
+                        if response.status_code in [200, 404]:  # 404 is OK, means server is responding
+                            server_ready = True
+                            break
+                except Exception:
+                    pass
+                await asyncio.sleep(1)
+            
+            if not server_ready:
+                raise RuntimeError("SSE Server did not become ready within timeout")
+            
+            print(f"SSE Server is ready", file=sys.stderr)
+            
+            # Use official MCP SSE client to connect
+            url = f"http://127.0.0.1:{port}/sse"
+            print(f"Connecting to SSE endpoint: {url}", file=sys.stderr)
+            
+            async with sse_client(url, timeout=30.0) as (read_stream, write_stream):
+                from datetime import timedelta
+                session = ClientSession(read_stream, write_stream, read_timeout_seconds=timedelta(seconds=30))
+                print(f"SSE Client session created", file=sys.stderr)
+                
+                # Initialize the session with timeout
+                print(f"Initializing SSE session...", file=sys.stderr)
+                try:
+                    # Use asyncio.wait_for to add additional timeout protection
+                    await asyncio.wait_for(session.initialize(), timeout=30.0)
+                    print(f"SSE Client Session initialized", file=sys.stderr)
+                except asyncio.TimeoutError:
+                    print(f"SSE session initialization timed out", file=sys.stderr)
+                    raise
+                
+                yield session
             
         except Exception as e:
             print(f"Error starting SSE server: {e}", file=sys.stderr)
             raise
         finally:
+            # Improved resource cleanup
             if server_process:
                 try:
+                    # First try graceful termination
+                    print(f"Terminating SSE server process {server_process.pid}...", file=sys.stderr)
                     server_process.terminate()
-                    server_process.wait(timeout=5)
-                except:
-                    server_process.kill()
-                    server_process.wait()
-                print("SSE Server stopped", file=sys.stderr)
-
-    @pytest.mark.asyncio
-    async def test_sse_command_execute_success(self, mcp_sse_session: tuple[str, int]):
-        """Integration test for successful command execution via SSE protocol."""
-        host, port = mcp_sse_session
-        print(f"Running SSE test on {host}:{port}...", file=sys.stderr)
-        
-        import httpx
-        
-        # Test simple HTTP request to ensure server is responding
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await asyncio.wait_for(
-                    client.post(
-                        f"http://{host}:{port}/sse",
-                        json={
-                            "method": "tools/call",
-                            "params": {
-                                "name": "command_execute",
-                                "arguments": {
-                                    "command": "echo",
-                                    "args": ["hello", "world"],
-                                    "timeout": 15,
-                                    "limit_lines": 500
-                                }
-                            }
-                        },
-                        timeout=30.0
-                    ),
-                    timeout=60.0
-                )
-                
-                print(f"SSE Response status: {response.status_code}", file=sys.stderr)
-                print(f"SSE Response content: {response.text[:200]}...", file=sys.stderr)
-                
-                # For this test, we just want to see if the server responds
-                # The actual response format might be different for SSE
-                assert response.status_code in [200, 400, 404, 405]  # Any response means server is alive
-                
-                print("✅ SSE server is responding", file=sys.stderr)
-                
-        except Exception as e:
-            print(f"❌ SSE test failed: {e}", file=sys.stderr)
-            # Don't raise - this is just a diagnostic test
-            print("ℹ️  This suggests the issue might be specific to stdio mode", file=sys.stderr)
+                    try:
+                        server_process.wait(timeout=5)
+                        print(f"SSE server process {server_process.pid} terminated gracefully", file=sys.stderr)
+                    except subprocess.TimeoutExpired:
+                        print(f"SSE server process {server_process.pid} did not terminate gracefully, killing...", file=sys.stderr)
+                        server_process.kill()
+                        server_process.wait(timeout=5)
+                        print(f"SSE server process {server_process.pid} killed", file=sys.stderr)
+                except Exception as cleanup_error:
+                    print(f"Error during SSE server cleanup: {cleanup_error}", file=sys.stderr)
+                finally:
+                    print("SSE Server stopped", file=sys.stderr)
 
 
 class TestFilesystemServerIntegration:

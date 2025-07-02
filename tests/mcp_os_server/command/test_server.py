@@ -214,7 +214,6 @@ def mcp_server(command_executor: CommandExecutor) -> FastMCP:
         mcp, 
         command_executor,
         allowed_commands=[sys.executable, "python", "echo", "sleep", "exit", "grep", "nonexistent-command-12345"],  # Include all commands needed for tests
-        process_retention_seconds=5,
         default_encoding="utf-8"
     )
     return mcp
@@ -1033,7 +1032,6 @@ class TestMCPServerConfigurationParameters:
             mcp, 
             command_executor,
             allowed_commands=[sys.executable],  # Only allow the actual python executable
-            process_retention_seconds=2,  # Short retention for testing
             default_encoding="utf-8"
         )
         return mcp
@@ -1050,7 +1048,6 @@ class TestMCPServerConfigurationParameters:
             mcp, 
             command_executor,
             allowed_commands=[sys.executable, "echo", "sleep"],
-            process_retention_seconds=5,
             default_encoding="gbk"  # Different default encoding
         )
         return mcp

@@ -61,7 +61,6 @@ def define_mcp_server(
         mcp: FastMCP, command_executor: ICommandExecutor,
         *,
         allowed_commands: List[str],
-        process_retention_seconds: int,
         default_encoding: str,
         # TODO: add other options if needed
     ) -> None:
@@ -72,9 +71,7 @@ def define_mcp_server(
         mcp: The MCP server instance.
         command_executor: The command executor instance.
         allowed_commands: A list of commands that are allowed to be executed.
-        process_retention_seconds: The number of seconds to retain completed or failed processes.
         default_encoding: The default encoding for the command output.
-        # TODO: add other options if needed
     """
 
     logger.info(f"Allowed commands: {allowed_commands}")

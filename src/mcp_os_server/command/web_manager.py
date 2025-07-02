@@ -157,7 +157,7 @@ class WebManager:
 
     def _process_detail(self, process_id: str):
         """Render the process detail page."""
-        return render_template("process_detail.html", process_id=process_id)
+        return render_template("process_detail.html", pid=process_id)
 
     # API route handlers
     def _api_get_processes(self):

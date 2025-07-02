@@ -14,7 +14,7 @@ class TestFilesystemService:
         """测试使用允许目录初始化服务"""
         service = FilesystemService([str(temp_dir)])
         assert len(service.allowed_dirs) == 1
-        assert str(temp_dir) in service.allowed_dirs
+        assert Path(temp_dir).resolve() in service.allowed_dirs
 
     def test_init_empty_dirs_raises_error(self):
         """测试没有允许目录时抛出错误"""
