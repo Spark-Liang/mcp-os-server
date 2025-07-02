@@ -65,7 +65,25 @@ class CommandExecutor(ICommandExecutor):
         try:
             completed_info = await process.wait_for_completion(timeout=timeout)
         except (asyncio.TimeoutError, ProcessTimeoutError) as e:
-            raise CommandTimeoutError(f"Command '{' '.join(command)}' timed out.") from e
+            # 超时时收集已有的输出
+            tail_limit = limit_lines if limit_lines is not None else None
+            
+            stdout_output = process.get_output("stdout", tail=tail_limit)
+            if asyncio.iscoroutine(stdout_output):
+                stdout_output = await stdout_output
+            stdout_lines = [log.text async for log in stdout_output]
+            
+            stderr_output = process.get_output("stderr", tail=tail_limit)
+            if asyncio.iscoroutine(stderr_output):
+                stderr_output = await stderr_output
+            stderr_lines = [log.text async for log in stderr_output]
+            
+            raise CommandTimeoutError(
+                f"Command '{' '.join(command)}' timed out.",
+                pid=process.pid,
+                stdout="\n".join(stdout_lines),
+                stderr="\n".join(stderr_lines)
+            ) from e
 
         end_time = time.monotonic()
 

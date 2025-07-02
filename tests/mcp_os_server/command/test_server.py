@@ -514,9 +514,16 @@ class TestMCPServerDefensiveProgramming:
             }
         )
         assert isinstance(result, list)
-        assert len(result) == 1
+        assert len(result) == 4  # Now expecting 4 TextContent items for timeout
         assert isinstance(result[0], TextContent)
-        assert validate_error_message_format(result[0].text, "command_timeout")
+        assert isinstance(result[1], TextContent)
+        assert isinstance(result[2], TextContent)
+        assert isinstance(result[3], TextContent)
+        # Validate timeout message contains PID and guidance
+        assert "Command timed out with PID:" in result[0].text
+        assert "stdout (partial)" in result[1].text
+        assert "stderr (partial)" in result[2].text
+        assert "Process" in result[3].text and "might still be running" in result[3].text
 
     @pytest.mark.asyncio
     async def test_command_bg_start_nonexistent_command(self, mcp_server, tmp_path):

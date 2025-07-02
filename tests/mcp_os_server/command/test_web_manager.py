@@ -2,7 +2,7 @@
 Test suite for WebManager API interfaces.
 
 This module provides comprehensive tests for the WebManager class,
-including both direct method calls and Flask API endpoints testing.
+including both direct method calls and FastAPI API endpoints testing.
 """
 
 import asyncio
@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
-from flask import Flask
+from fastapi.testclient import TestClient
 
 from mcp_os_server.command.exceptions import ProcessNotFoundError, WebInterfaceError
 from mcp_os_server.command.interfaces import ICommandExecutor
@@ -221,10 +221,9 @@ async def initialized_web_manager(web_manager, mock_command_executor):
 
 
 @pytest.fixture
-def flask_client(initialized_web_manager):
-    """Fixture providing a Flask test client."""
-    with initialized_web_manager._app.test_client() as client:
-        yield client
+def test_client(initialized_web_manager):
+    """Fixture providing a FastAPI test client."""
+    return TestClient(initialized_web_manager._app)
 
 
 class TestWebManagerInitialization:
@@ -410,138 +409,133 @@ class TestWebManagerBusinessLogic:
             await initialized_web_manager.clean_selected_processes([])
 
 
-class TestWebManagerFlaskAPI:
-    """Test WebManager Flask API endpoints."""
+class TestWebManagerFastAPIAPI:
+    """Test WebManager FastAPI API endpoints."""
     
-    def test_api_get_processes_all(self, flask_client):
+    def test_api_get_processes_all(self, test_client):
         """Test GET /api/processes endpoint."""
-        response = flask_client.get('/api/processes')
+        response = test_client.get('/api/processes')
         
         assert response.status_code == 200
-        data = json.loads(response.data)
+        data = response.json()
         assert data["success"] is True
         assert "data" in data
         assert data["count"] == 3
     
-    def test_api_get_processes_filter_status(self, flask_client):
+    def test_api_get_processes_filter_status(self, test_client):
         """Test GET /api/processes with status filter."""
-        response = flask_client.get('/api/processes?status=running')
+        response = test_client.get('/api/processes?status=running')
         
         assert response.status_code == 200
-        data = json.loads(response.data)
+        data = response.json()
         assert data["success"] is True
         assert data["count"] == 1
         assert data["data"][0]["status"] == "running"
     
-    def test_api_get_processes_filter_labels(self, flask_client):
+    def test_api_get_processes_filter_labels(self, test_client):
         """Test GET /api/processes with labels filter."""
-        response = flask_client.get('/api/processes?labels=test,echo')
+        response = test_client.get('/api/processes?labels=test,echo')
         
         assert response.status_code == 200
-        data = json.loads(response.data)
+        data = response.json()
         assert data["success"] is True
         assert data["count"] >= 1
     
-    def test_api_get_process_detail_success(self, flask_client):
+    def test_api_get_process_detail_success(self, test_client):
         """Test GET /api/processes/<id> endpoint."""
-        response = flask_client.get('/api/processes/proc1')
+        response = test_client.get('/api/processes/proc1')
         
         assert response.status_code == 200
-        data = json.loads(response.data)
+        data = response.json()
         assert data["success"] is True
         assert data["data"]["pid"] == "proc1"
         assert data["data"]["status"] == "running"
     
-    def test_api_get_process_detail_not_found(self, flask_client):
+    def test_api_get_process_detail_not_found(self, test_client):
         """Test GET /api/processes/<id> for non-existent process."""
-        response = flask_client.get('/api/processes/nonexistent')
+        response = test_client.get('/api/processes/nonexistent')
         
         assert response.status_code == 404
-        data = json.loads(response.data)
-        assert data["success"] is False
-        assert "not found" in data["error"].lower()
+        data = response.json()
+        assert "not found" in data["detail"].lower()
     
-    def test_api_get_process_output_success(self, flask_client):
+    def test_api_get_process_output_success(self, test_client):
         """Test GET /api/processes/<id>/output endpoint."""
-        response = flask_client.get('/api/processes/proc1/output')
+        response = test_client.get('/api/processes/proc1/output')
         
         assert response.status_code == 200
-        data = json.loads(response.data)
+        data = response.json()
         assert data["success"] is True
         assert "stdout" in data["data"]
         assert "stderr" in data["data"]
     
-    def test_api_get_process_output_with_params(self, flask_client):
+    def test_api_get_process_output_with_params(self, test_client):
         """Test GET /api/processes/<id>/output with parameters."""
-        response = flask_client.get(
+        response = test_client.get(
             '/api/processes/proc1/output?tail=1&with_stdout=true&with_stderr=false'
         )
         
         assert response.status_code == 200
-        data = json.loads(response.data)
+        data = response.json()
         assert data["success"] is True
         assert len(data["data"]["stdout"]) == 1
         assert len(data["data"]["stderr"]) == 0
     
-    def test_api_get_process_output_not_found(self, flask_client):
+    def test_api_get_process_output_not_found(self, test_client):
         """Test GET /api/processes/<id>/output for non-existent process."""
-        response = flask_client.get('/api/processes/nonexistent/output')
+        response = test_client.get('/api/processes/nonexistent/output')
         
         assert response.status_code == 404
-        data = json.loads(response.data)
-        assert data["success"] is False
     
-    def test_api_stop_process_success(self, flask_client):
+    def test_api_stop_process_success(self, test_client):
         """Test POST /api/processes/<id>/stop endpoint."""
-        response = flask_client.post(
+        response = test_client.post(
             '/api/processes/proc1/stop',
             json={"force": False}
         )
         
         assert response.status_code == 200
-        data = json.loads(response.data)
+        data = response.json()
         assert data["success"] is True
         assert data["data"]["pid"] == "proc1"
     
-    def test_api_stop_process_force(self, flask_client):
+    def test_api_stop_process_force(self, test_client):
         """Test POST /api/processes/<id>/stop with force."""
-        response = flask_client.post(
+        response = test_client.post(
             '/api/processes/proc1/stop',
             json={"force": True}
         )
         
         assert response.status_code == 200
-        data = json.loads(response.data)
+        data = response.json()
         assert data["success"] is True
         assert data["data"]["force"] == "True"
     
-    def test_api_stop_process_not_found(self, flask_client):
+    def test_api_stop_process_not_found(self, test_client):
         """Test POST /api/processes/<id>/stop for non-existent process."""
-        response = flask_client.post(
+        response = test_client.post(
             '/api/processes/nonexistent/stop',
             json={"force": False}
         )
         
         assert response.status_code == 404
-        data = json.loads(response.data)
-        assert data["success"] is False
     
-    def test_api_clean_process_success(self, flask_client):
+    def test_api_clean_process_success(self, test_client):
         """Test POST /api/processes/<id>/clean endpoint."""
-        response = flask_client.post('/api/processes/proc2/clean')
+        response = test_client.post('/api/processes/proc2/clean')
         
         assert response.status_code == 200
-        data = json.loads(response.data)
+        data = response.json()
         assert data["success"] is True
         assert data["data"]["pid"] == "proc2"
     
-    def test_api_clean_process_not_found(self, flask_client):
+    def test_api_clean_process_not_found(self, test_client):
         """Test POST /api/processes/<id>/clean for non-existent process."""
-        response = flask_client.post('/api/processes/nonexistent/clean')
+        response = test_client.post('/api/processes/nonexistent/clean')
         
         # clean_process API returns 200 with error info in the result, not 404
         assert response.status_code == 200
-        data = json.loads(response.data)
+        data = response.json()
         assert data["success"] is True
         assert "not found" in data["data"]["result"]
 
@@ -549,19 +543,19 @@ class TestWebManagerFlaskAPI:
 class TestWebManagerWebInterface:
     """Test WebManager web interface functionality."""
     
-    def test_index_route(self, flask_client):
+    def test_index_route(self, test_client):
         """Test the index route returns HTML."""
-        response = flask_client.get('/')
+        response = test_client.get('/')
         
         assert response.status_code == 200
-        assert b'html' in response.data or response.content_type == 'text/html; charset=utf-8'
+        assert 'text/html' in response.headers.get('content-type', '')
     
-    def test_process_detail_route(self, flask_client):
+    def test_process_detail_route(self, test_client):
         """Test the process detail route returns HTML."""
-        response = flask_client.get('/process/proc1')
+        response = test_client.get('/process/proc1')
         
         assert response.status_code == 200
-        assert b'html' in response.data or response.content_type == 'text/html; charset=utf-8'
+        assert 'text/html' in response.headers.get('content-type', '')
 
 
 class TestWebManagerStartInterface:
@@ -627,7 +621,7 @@ class TestWebManagerShutdown:
         
         await initialized_web_manager.shutdown()
         
-        mock_server.shutdown.assert_called_once()
+        assert mock_server.should_exit is True
         assert initialized_web_manager._command_executor is None
 
 
@@ -645,16 +639,15 @@ class TestWebManagerErrorHandling:
         with pytest.raises(WebInterfaceError, match="Failed to get processes"):
             await initialized_web_manager.get_processes()
     
-    def test_api_exception_handling(self, flask_client):
+    def test_api_exception_handling(self, test_client):
         """Test API exception handling returns proper error response."""
         # This would test the case where the underlying service throws an exception
         # We need to mock the initialized_web_manager to throw an exception
         
         # For now, we test with a malformed request that should cause an error
-        response = flask_client.get('/api/processes?status=invalid_status')
+        response = test_client.get('/api/processes?status=invalid_status')
         
         # This should return an error response
-        assert response.status_code == 500
-        data = json.loads(response.data)
-        assert data["success"] is False
-        assert "error" in data
+        assert response.status_code == 400
+        data = response.json()
+        assert "Invalid status" in data["detail"]

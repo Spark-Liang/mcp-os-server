@@ -10,13 +10,14 @@ requires-python = ">=3.11"
 dependencies = [
     "asyncio>=3.4.3",
     "click>=8.1.7",
-    "flask>=3.1.0",
+    "fastapi>=0.115.14",
+    "jinja2>=3.1.6",
     "loguru>=0.7.3",
     "mcp>=1.8.1",
     "pillow>=11.2.1",
     "pydantic>=2.10.3",
     "pyyaml>=6.0.2",
-    "waitress>=3.0.2",
+    "uvicorn>=0.34.3",
 ]
 
 [project.scripts]
@@ -150,6 +151,11 @@ exclude_lines = [
 omit = [
     "src/mcp_os_server/__init__.py",
     "src/mcp_os_server/version.py",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
 ]
 
 

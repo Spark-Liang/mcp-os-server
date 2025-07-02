@@ -1,7 +1,7 @@
 """
 Web Manager Implementation for MCP Command Server.
 
-This module provides a Flask-based web interface for managing background processes.
+This module provides a FastAPI-based web interface for managing background processes.
 It implements the IWebManager interface and provides both web UI and REST API endpoints.
 """
 
@@ -12,11 +12,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
-from flask import Flask, jsonify, render_template, request
+import uvicorn
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
 from .exceptions import ProcessNotFoundError, WebInterfaceError
 from .interfaces import ICommandExecutor, IWebManager
 from .models import ProcessInfo, ProcessStatus
+
+
+class StopProcessRequest(BaseModel):
+    """Request model for stopping a process."""
+    force: bool = False
 
 
 class WebManager:
@@ -32,11 +42,13 @@ class WebManager:
 
     def __init__(self) -> None:
         """Initialize the Web Manager."""
-        self._app = Flask(__name__)
+        self._app = FastAPI(title="MCP Command Server", description="Process Management Interface")
         self._command_executor: Optional[ICommandExecutor] = None
+        self._main_loop: Optional[asyncio.AbstractEventLoop] = None
         self._server_thread: Optional[threading.Thread] = None
         self._server = None
         self._logger = logging.getLogger(__name__)
+        self._templates: Optional[Jinja2Templates] = None
         self._setup_routes()
 
     async def initialize(self, command_executor: ICommandExecutor) -> None:
@@ -52,6 +64,8 @@ class WebManager:
         """
         try:
             self._command_executor = command_executor
+            # Save the current event loop as the main loop
+            self._main_loop = asyncio.get_running_loop()
             self._setup_template_folder()
             self._logger.info("WebManager initialized successfully")
         except Exception as e:
@@ -59,23 +73,59 @@ class WebManager:
             raise
 
     def _setup_template_folder(self) -> None:
-        """Setup Flask template folder path."""
+        """Setup FastAPI template folder path."""
         current_dir = Path(__file__).parent
         template_dir = current_dir / "web_manager_templates"
-        self._app.template_folder = str(template_dir)
+        self._templates = Jinja2Templates(directory=str(template_dir))
 
     def _setup_routes(self) -> None:
-        """Setup Flask routes for web interface and API endpoints."""
+        """Setup FastAPI routes for web interface and API endpoints."""
         # Web UI routes
-        self._app.route("/")(self._index)
-        self._app.route("/process/<process_id>")(self._process_detail)
+        self._app.get("/", response_class=HTMLResponse)(self._index)
+        self._app.get("/process/{process_id}", response_class=HTMLResponse)(self._process_detail)
         
         # API routes
-        self._app.route("/api/processes")(self._api_get_processes)
-        self._app.route("/api/processes/<process_id>")(self._api_get_process_detail)
-        self._app.route("/api/processes/<process_id>/output")(self._api_get_process_output)
-        self._app.route("/api/processes/<process_id>/stop", methods=["POST"])(self._api_stop_process)
-        self._app.route("/api/processes/<process_id>/clean", methods=["POST"])(self._api_clean_process)
+        self._app.get("/api/processes")(self._api_get_processes)
+        self._app.get("/api/processes/{process_id}")(self._api_get_process_detail)
+        self._app.get("/api/processes/{process_id}/output")(self._api_get_process_output)
+        self._app.post("/api/processes/{process_id}/stop")(self._api_stop_process)
+        self._app.post("/api/processes/{process_id}/clean")(self._api_clean_process)
+
+    async def _execute_in_main_loop(self, coro):
+        """
+        Execute a coroutine in the main event loop to avoid event loop mismatch issues.
+        
+        This method handles the event loop mismatch between the web interface thread
+        and the main application thread.
+        
+        Args:
+            coro: The coroutine to execute
+            
+        Returns:
+            The result of the coroutine execution
+            
+        Raises:
+            WebInterfaceError: If the main event loop is not available
+        """
+        if not self._main_loop:
+            # If no main loop stored, execute directly (likely in test environment)
+            return await coro
+        
+        try:
+            # Try to execute directly first - this works in most cases including tests
+            return await coro
+        except RuntimeError as e:
+            if "different event loop" in str(e) or "bound to a different event loop" in str(e):
+                # Only use run_coroutine_threadsafe if we get a specific event loop error
+                try:
+                    future = asyncio.run_coroutine_threadsafe(coro, self._main_loop)
+                    return future.result()
+                except Exception as threadsafe_error:
+                    # If threadsafe also fails, re-raise the original error
+                    raise e from threadsafe_error
+            else:
+                # For other RuntimeErrors, re-raise
+                raise
 
     async def start_web_interface(self,
                                   host: str = "0.0.0.0",
@@ -83,11 +133,11 @@ class WebManager:
                                   debug: bool = False,
                                   url_prefix: str = "") -> None:
         """
-        Start the web interface using a production-ready WSGI server.
+        Start the web interface using Uvicorn ASGI server.
         
         Args:
             host: The host address to listen on.
-            port: The port to listen on. If None, Flask will choose.
+            port: The port to listen on. If None, defaults to 8080.
             debug: Whether to enable debug mode.
             url_prefix: URL prefix for running under a subpath.
             
@@ -100,201 +150,184 @@ class WebManager:
         
         try:
             if url_prefix:
-                self._app.config['APPLICATION_ROOT'] = url_prefix
+                # For URL prefix support, we could use a sub-application
+                # For now, we'll note this as a potential enhancement
+                self._logger.warning(f"URL prefix '{url_prefix}' is noted but not implemented yet")
             
-            # Use production server unless in debug mode
-            if debug:
-                # Use Flask development server for debugging
-                self._server_thread = threading.Thread(
-                    target=self._run_flask_dev_server,
-                    args=(host, port, debug),
-                    daemon=True
-                )
-            else:
-                # Use production-ready server
-                self._server_thread = threading.Thread(
-                    target=self._run_production_server,
-                    args=(host, port),
-                    daemon=True
-                )
+            # Use Uvicorn server
+            self._server_thread = threading.Thread(
+                target=self._run_uvicorn_server,
+                args=(host, port or 8080, debug),
+                daemon=True
+            )
             
             self._server_thread.start()
-            self._logger.info(f"Web interface started on {host}:{port}")
+            self._logger.info(f"Web interface started on {host}:{port or 8080}")
             
         except Exception as e:
             error_msg = f"Failed to start web interface: {e}"
             self._logger.error(error_msg)
             raise WebInterfaceError(error_msg) from e
 
-    def _run_flask_dev_server(self, host: str, port: Optional[int], debug: bool) -> None:
-        """Run Flask development server (for debugging only)."""
+    def _run_uvicorn_server(self, host: str, port: int, debug: bool) -> None:
+        """Run Uvicorn server."""
         try:
-            self._app.run(host=host, port=port, debug=debug, threaded=True)
+            config = uvicorn.Config(
+                app=self._app,
+                host=host,
+                port=port,
+                log_level="debug" if debug else "info",
+                reload=debug,
+                access_log=debug
+            )
+            self._server = uvicorn.Server(config)
+            self._server.run()
         except Exception as e:
-            self._logger.error(f"Flask development server error: {e}")
-
-    def _run_production_server(self, host: str, port: Optional[int]) -> None:
-        """Run production-ready WSGI server."""
-        try:
-            # Try to use waitress (production-ready, cross-platform)
-            try:
-                from waitress import serve
-                self._logger.info("Using Waitress production server")
-                serve(self._app, host=host, port=port or 8080, threads=6)
-            except ImportError:
-                # Fallback to werkzeug's production server
-                self._logger.warning("Waitress not available, using Werkzeug server")
-                from werkzeug.serving import make_server
-                self._server = make_server(host, port or 8080, self._app, threaded=True)
-                self._server.serve_forever()
-        except Exception as e:
-            self._logger.error(f"Production server error: {e}")
+            self._logger.error(f"Uvicorn server error: {e}")
 
     # Web UI route handlers
-    def _index(self):
+    async def _index(self, request: Request):
         """Render the main process list page."""
-        return render_template("process_list.html")
+        if not self._templates:
+            raise HTTPException(status_code=500, detail="Templates not initialized")
+        return self._templates.TemplateResponse(request, "process_list.html")
 
-    def _process_detail(self, process_id: str):
+    async def _process_detail(self, request: Request, process_id: str):
         """Render the process detail page."""
-        return render_template("process_detail.html", pid=process_id)
+        if not self._templates:
+            raise HTTPException(status_code=500, detail="Templates not initialized")
+        return self._templates.TemplateResponse(
+            request, "process_detail.html", {"pid": process_id}
+        )
 
     # API route handlers
-    def _api_get_processes(self):
+    async def _api_get_processes(self,
+                                status: Optional[str] = Query(None),
+                                labels: Optional[str] = Query(None)):
         """API endpoint to get process list with optional filtering."""
         try:
-            # Extract filter parameters from request
-            status_param = request.args.get('status')
-            labels_param = request.args.get('labels')
+            # Parse filter parameters
+            process_status = None
+            if status:
+                try:
+                    process_status = ProcessStatus(status)
+                except ValueError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid status: {status}. Must be one of {', '.join([s.value for s in ProcessStatus])}"
+                    )
             
-            status = ProcessStatus(status_param) if status_param else None
-            labels = [label.strip() for label in labels_param.split(',')] if labels_param else None
+            parsed_labels = None
+            if labels:
+                parsed_labels = [label.strip() for label in labels.split(',')]
             
             # Get processes using async method
-            processes = asyncio.run(self.get_processes(labels=labels, status=status))
+            processes = await self.get_processes(labels=parsed_labels, status=process_status)
             
             # Convert to JSON-serializable format
             process_data = [self._process_info_to_dict(p) for p in processes]
             
-            return jsonify({
+            return {
                 'success': True,
                 'data': process_data,
                 'count': len(process_data)
-            })
+            }
             
+        except HTTPException:
+            raise
         except Exception as e:
             self._logger.error(f"Error getting processes: {e}")
-            return jsonify({
-                'success': False,
-                'error': str(e)
-            }), 500
+            raise HTTPException(status_code=500, detail=str(e))
 
-    def _api_get_process_detail(self, process_id: str):
+    async def _api_get_process_detail(self, process_id: str):
         """API endpoint to get detailed process information."""
         try:
-            process_info = asyncio.run(self.get_process_detail(process_id))
-            return jsonify({
+            process_info = await self.get_process_detail(process_id)
+            return {
                 'success': True,
                 'data': self._process_info_to_dict(process_info)
-            })
+            }
             
         except ProcessNotFoundError as e:
-            return jsonify({
-                'success': False,
-                'error': str(e)
-            }), 404
+            raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:
             self._logger.error(f"Error getting process detail: {e}")
-            return jsonify({
-                'success': False,
-                'error': str(e)
-            }), 500
+            raise HTTPException(status_code=500, detail=str(e))
 
-    def _api_get_process_output(self, process_id: str):
+    async def _api_get_process_output(self,
+                                     process_id: str,
+                                     tail: Optional[int] = Query(None),
+                                     with_stdout: bool = Query(True),
+                                     with_stderr: bool = Query(False),
+                                     since: Optional[str] = Query(None),
+                                     until: Optional[str] = Query(None)):
         """API endpoint to get process output."""
         try:
-            # Extract parameters from request
-            tail = request.args.get('tail', type=int)
-            with_stdout = request.args.get('with_stdout', 'true').lower() == 'true'
-            with_stderr = request.args.get('with_stderr', 'false').lower() == 'true'
-            
             # Parse datetime parameters
-            since_str = request.args.get('since')
-            until_str = request.args.get('until')
+            since_dt = None
+            until_dt = None
             
-            since = datetime.fromisoformat(since_str) if since_str else None
-            until = datetime.fromisoformat(until_str) if until_str else None
+            if since:
+                try:
+                    since_dt = datetime.fromisoformat(since)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=f"Invalid since timestamp: {since}")
             
-            output = asyncio.run(
-                self.get_process_output(
-                    process_id, tail=tail, since=since, until=until,
-                    with_stdout=with_stdout, with_stderr=with_stderr
-                )
+            if until:
+                try:
+                    until_dt = datetime.fromisoformat(until)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=f"Invalid until timestamp: {until}")
+            
+            output = await self.get_process_output(
+                process_id, tail=tail, since=since_dt, until=until_dt,
+                with_stdout=with_stdout, with_stderr=with_stderr
             )
             
-            return jsonify({
+            return {
                 'success': True,
                 'data': output
-            })
+            }
             
         except ProcessNotFoundError as e:
-            return jsonify({
-                'success': False,
-                'error': str(e)
-            }), 404
+            raise HTTPException(status_code=404, detail=str(e))
+        except HTTPException:
+            raise
         except Exception as e:
             self._logger.error(f"Error getting process output: {e}")
-            return jsonify({
-                'success': False,
-                'error': str(e)
-            }), 500
+            raise HTTPException(status_code=500, detail=str(e))
 
-    def _api_stop_process(self, process_id: str):
+    async def _api_stop_process(self, process_id: str, request: StopProcessRequest):
         """API endpoint to stop a process."""
         try:
-            data = request.get_json() or {}
-            force = data.get('force', False)
+            result = await self.stop_process(process_id, force=request.force)
             
-            result = asyncio.run(self.stop_process(process_id, force=force))
-            
-            return jsonify({
+            return {
                 'success': True,
                 'data': result
-            })
+            }
             
         except ProcessNotFoundError as e:
-            return jsonify({
-                'success': False,
-                'error': str(e)
-            }), 404
+            raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:
             self._logger.error(f"Error stopping process: {e}")
-            return jsonify({
-                'success': False,
-                'error': str(e)
-            }), 500
+            raise HTTPException(status_code=500, detail=str(e))
 
-    def _api_clean_process(self, process_id: str):
+    async def _api_clean_process(self, process_id: str):
         """API endpoint to clean a process."""
         try:
-            result = asyncio.run(self.clean_process(process_id))
+            result = await self.clean_process(process_id)
             
-            return jsonify({
+            return {
                 'success': True,
                 'data': result
-            })
+            }
             
         except ProcessNotFoundError as e:
-            return jsonify({
-                'success': False,
-                'error': str(e)
-            }), 404
+            raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:
             self._logger.error(f"Error cleaning process: {e}")
-            return jsonify({
-                'success': False,
-                'error': str(e)
-            }), 500
+            raise HTTPException(status_code=500, detail=str(e))
 
     # IWebManager interface implementation
     async def get_processes(self,
@@ -305,7 +338,9 @@ class WebManager:
             raise WebInterfaceError("WebManager not initialized")
         
         try:
-            return await self._command_executor.list_process(status=status, labels=labels)
+            return await self._execute_in_main_loop(
+                self._command_executor.list_process(status=status, labels=labels)
+            )
         except Exception as e:
             self._logger.error(f"Error getting processes: {e}")
             raise WebInterfaceError(f"Failed to get processes: {e}") from e
@@ -316,7 +351,9 @@ class WebManager:
             raise WebInterfaceError("WebManager not initialized")
         
         try:
-            return await self._command_executor.get_process_detail(pid)
+            return await self._execute_in_main_loop(
+                self._command_executor.get_process_detail(pid)
+            )
         except ProcessNotFoundError:
             raise
         except Exception as e:
@@ -341,25 +378,38 @@ class WebManager:
             since_ts = since.timestamp() if since else None
             until_ts = until.timestamp() if until else None
             
+            # Store reference to avoid repeated None checks
+            command_executor = self._command_executor
+            
             if with_stdout:
-                async for entry in self._command_executor.get_process_logs(
-                    pid, "stdout", since=since_ts, until=until_ts, tail=tail
-                ):
-                    result['stdout'].append({
-                        'timestamp': entry.timestamp,
-                        'content': entry.text,
-                        'output_key': entry.output_key
-                    })
+                async def get_stdout_logs():
+                    logs = []
+                    async for entry in command_executor.get_process_logs(
+                        pid, "stdout", since=since_ts, until=until_ts, tail=tail
+                    ):
+                        logs.append({
+                            'timestamp': entry.timestamp,
+                            'content': entry.text,
+                            'output_key': entry.output_key
+                        })
+                    return logs
+                
+                result['stdout'] = await self._execute_in_main_loop(get_stdout_logs())
                     
             if with_stderr:
-                async for entry in self._command_executor.get_process_logs(
-                    pid, "stderr", since=since_ts, until=until_ts, tail=tail
-                ):
-                    result['stderr'].append({
-                        'timestamp': entry.timestamp,
-                        'content': entry.text,
-                        'output_key': entry.output_key
-                    })
+                async def get_stderr_logs():
+                    logs = []
+                    async for entry in command_executor.get_process_logs(
+                        pid, "stderr", since=since_ts, until=until_ts, tail=tail
+                    ):
+                        logs.append({
+                            'timestamp': entry.timestamp,
+                            'content': entry.text,
+                            'output_key': entry.output_key
+                        })
+                    return logs
+                
+                result['stderr'] = await self._execute_in_main_loop(get_stderr_logs())
             
             return result
             
@@ -375,7 +425,9 @@ class WebManager:
             raise WebInterfaceError("WebManager not initialized")
         
         try:
-            await self._command_executor.stop_process(pid, force=force)
+            await self._execute_in_main_loop(
+                self._command_executor.stop_process(pid, force=force)
+            )
             return {
                 'message': f"Process {pid} stopped successfully",
                 'pid': pid,
@@ -394,7 +446,9 @@ class WebManager:
             raise WebInterfaceError("WebManager not initialized")
         
         try:
-            result = await self._command_executor.clean_process([pid])
+            result = await self._execute_in_main_loop(
+                self._command_executor.clean_process([pid])
+            )
             return {
                 'message': f"Process {pid} cleaned successfully",
                 'pid': pid,
@@ -426,7 +480,9 @@ class WebManager:
                     'cleaned_count': 0
                 }
             
-            results = await self._command_executor.clean_process(cleanable_pids)
+            results = await self._execute_in_main_loop(
+                self._command_executor.clean_process(cleanable_pids)
+            )
             cleaned_count = len([r for r in results.values() if 'success' in r.lower()])
             
             return {
@@ -448,7 +504,9 @@ class WebManager:
             raise ValueError("Process ID list cannot be empty")
         
         try:
-            results = await self._command_executor.clean_process(pids)
+            results = await self._execute_in_main_loop(
+                self._command_executor.clean_process(pids)
+            )
             
             successful = []
             failed = []
@@ -482,14 +540,15 @@ class WebManager:
         """Shutdown the Web Manager and release all resources."""
         try:
             if self._server:
-                # Shutdown production server
-                self._server.shutdown()
+                # Shutdown Uvicorn server
+                self._server.should_exit = True
             
             if self._server_thread and self._server_thread.is_alive():
-                # Note: For development server, thread will stop when main process exits
-                self._logger.info("Web server thread will be stopped when main process exits")
+                # Wait for thread to finish
+                self._logger.info("Waiting for web server thread to finish...")
             
             self._command_executor = None
+            self._main_loop = None
             self._logger.info("WebManager shutdown completed")
             
         except Exception as e:

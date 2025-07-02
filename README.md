@@ -738,6 +738,12 @@ MCP OS Server 暴露了以下 MCP 工具，客户端可以通过它们与服务�
     uv --project . run pytest tests/mcp_os_server/test_main_integration.py
     ```
 
+*  **使用 mcp inspector 测试**
+
+    ```bash
+    npx -y @modelcontextprotocol/inspector -e ALLOWED_COMMANDS=echo,dir -e ALLOWED_DIRS=E: uv run mcp-os-server command-server --mode stdio --enable-web-manager
+    ```
+
 ### 构建可执行文件
 
 要将 `mcp-os-server` 打包成单个可执行文件，可以使用 `build_executable.py` 脚本。

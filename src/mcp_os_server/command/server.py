@@ -82,10 +82,10 @@ def define_mcp_server(
         args: Optional[List[str]] = Field(None, description="The arguments for the command."),
         directory: str = Field(description="The working directory for the command."),
         stdin: Optional[str] = Field(None, description="Input to pass to the command via stdin."),
-        timeout: int = Field(15, description="Maximum execution time in seconds."),
+        timeout: float = Field(15, description="Maximum execution time in seconds."),
         envs: Optional[Dict[str, str]] = Field(None, description="Additional environment variables for the command."),
         encoding: str = Field(default_encoding, description="Character encoding for the command output (e.g., 'utf-8', 'gbk', 'cp936')."),
-        limit_lines: Optional[int] = Field(500, description="Maximum number of lines to return in each TextContent.")
+        limit_lines: float = Field(500, description="Maximum number of lines to return in each TextContent.",gt=0)
     ) -> Sequence[TextContent]:
         """
         Executes a single shell command and returns the result.
@@ -95,15 +95,19 @@ def define_mcp_server(
         if command not in allowed_commands:
             return [TextContent(type="text", text=f"Command '{command}' is not allowed. Allowed commands: {', '.join(allowed_commands)}")]
         
+        # Convert float parameters to int for internal use
+        timeout_int = max(1, int(timeout)) if timeout else 15
+        limit_lines_int = max(1, int(limit_lines)) if limit_lines else 500
+        
         try:
             result = await command_executor.execute_command(
                 command=[command] + (args or []),
                 directory=directory,
                 stdin_data=stdin.encode() if stdin else None,
-                timeout=timeout,
+                timeout=timeout_int,
                 envs=envs,
                 encoding=encoding or default_encoding,
-                limit_lines=limit_lines or 500,
+                limit_lines=limit_lines_int,
             )
 
             # Always return 3 TextContent items as per FDS specification
@@ -113,7 +117,13 @@ def define_mcp_server(
                 TextContent(type="text", text=f"---\nstderr:\n---\n{result.stderr}\n")
             ]
         except CommandTimeoutError as e:
-            return [TextContent(type="text", text=f"Command timed out: {e}")]
+            # 超时时返回4个TextContent，类似正常执行但包含额外的指导信息
+            return [
+                TextContent(type="text", text=f"**Command timed out with PID: {e.pid}**"),
+                TextContent(type="text", text=f"---\nstdout (partial):\n---\n{e.stdout}\n"),
+                TextContent(type="text", text=f"---\nstderr (partial):\n---\n{e.stderr}\n"),
+                TextContent(type="text", text=f"**Note: Process {e.pid} might still be running. Use command_ps_logs to view continued output.**")
+            ]
         except CommandExecutionError as e:
             return [TextContent(type="text", text=f"Command execution failed: {e}")]
         except Exception as e:
@@ -132,7 +142,7 @@ def define_mcp_server(
         stdin: Optional[str] = Field(None, description="Input to pass to the command via stdin."),
         envs: Optional[Dict[str, str]] = Field(None, description="Additional environment variables for the command."),
         encoding: str = Field(default_encoding, description="Character encoding for the command output."),
-        timeout: int = Field(15, description="Maximum execution time in seconds.")
+        timeout: float = Field(15, description="Maximum execution time in seconds.")
     ) -> Sequence[TextContent]:
         """
         Starts a background process for a single command and provides fine-grained management.
@@ -141,13 +151,16 @@ def define_mcp_server(
         if command not in allowed_commands:
             return [TextContent(type="text", text=f"Command '{command}' is not allowed. Allowed commands: {', '.join(allowed_commands)}")]
         
+        # Convert float parameter to int for internal use
+        timeout_int = max(1, int(timeout)) if timeout else 15
+        
         try:
             process = await command_executor.start_background_command(
                 command=[command] + (args or []),
                 directory=directory,
                 description=description,
                 stdin_data=stdin.encode() if stdin else None,
-                timeout=timeout,
+                timeout=timeout_int,
                 envs=envs,
                 encoding=encoding or default_encoding,
                 labels=labels,
@@ -215,21 +228,25 @@ def define_mcp_server(
     @mcp.tool()
     async def command_ps_logs(
         pid: str = Field(description="The ID of the process to get output from."),
-        tail: Optional[int] = Field(None, description="Number of lines to show from the end."),
+        tail: Optional[float] = Field(None, description="Number of lines to show from the end."),
         since: Optional[str] = Field(None, description="Show logs since this timestamp (ISO format, e.g., '2023-05-06T14:30:00')."),
         until: Optional[str] = Field(None, description="Show logs until this timestamp (ISO format, e.g., '2023-05-06T15:30:00')."),
         with_stdout: Optional[bool] = Field(True, description="Show standard output."),
         with_stderr: Optional[bool] = Field(False, description="Show error output."),
         add_time_prefix: Optional[bool] = Field(True, description="Add a timestamp prefix to each output line."),
         time_prefix_format: Optional[str] = Field(None, description="Format of the timestamp prefix, using strftime format."),
-        follow_seconds: Optional[int] = Field(1, description="Wait for the specified number of seconds to get new logs. If 0, return immediately."),
-        limit_lines: Optional[int] = Field(500, description="Maximum number of lines to return in each TextContent."),
+        follow_seconds: Optional[float] = Field(None, description="Wait for the specified number of seconds to get new logs. If 0, or None, return immediately."),
+        limit_lines: float = Field(500, description="Maximum number of lines to return in each TextContent.", gt=0),
         grep: Optional[str] = Field(None, description="Perl standard regular expression to filter output."),
         grep_mode: Optional[str] = Field("line", description="Regex match mode: 'line' (matching line) or 'content' (matching content itself).")
     ) -> Sequence[TextContent]:
         """
         Gets the output of a process, with support for filtering via regular expressions.
         """
+        # Convert float parameters to int for internal use
+        tail_int = max(1, int(tail)) if tail is not None and tail > 0 else None
+        follow_seconds_int = max(0, int(follow_seconds)) if follow_seconds is not None else None
+        limit_lines_int = max(1, int(limit_lines)) if limit_lines else 500
         try:
             since_ts = datetime.fromisoformat(since).timestamp() if since else None
         except (ValueError, TypeError) as e:
@@ -265,7 +282,7 @@ def define_mcp_server(
                 try:
                     stdout_logs = []
                     async for log_entry in command_executor.get_process_logs(
-                        pid, "stdout", since_ts, until_ts, tail
+                        pid, "stdout", since_ts, until_ts, tail_int
                     ):
                         stdout_logs.append(log_entry)
                     
@@ -275,7 +292,7 @@ def define_mcp_server(
                         
                         # Format logs with time prefix if requested
                         formatted_logs = []
-                        for log in filtered_logs[:limit_lines or 500]:
+                        for log in filtered_logs[:limit_lines_int]:
                             if add_time_prefix:
                                 time_str = log.timestamp.strftime(time_format)
                                 formatted_logs.append(f"[{time_str}] {log.text}")
@@ -297,7 +314,7 @@ def define_mcp_server(
                 try:
                     stderr_logs = []
                     async for log_entry in command_executor.get_process_logs(
-                        pid, "stderr", since_ts, until_ts, tail
+                        pid, "stderr", since_ts, until_ts, tail_int
                     ):
                         stderr_logs.append(log_entry)
                     
@@ -307,7 +324,7 @@ def define_mcp_server(
                         
                         # Format logs with time prefix if requested
                         formatted_logs = []
-                        for log in filtered_logs[:limit_lines or 500]:
+                        for log in filtered_logs[:limit_lines_int]:
                             if add_time_prefix:
                                 time_str = log.timestamp.strftime(time_format)
                                 formatted_logs.append(f"[{time_str}] {log.text}")
@@ -325,8 +342,8 @@ def define_mcp_server(
                     pass
             
             # Handle follow_seconds - simulate waiting for new logs
-            if follow_seconds and follow_seconds > 0:
-                await asyncio.sleep(min(follow_seconds, 5))  # Cap at 5 seconds for safety
+            if follow_seconds_int and follow_seconds_int > 0:
+                await asyncio.sleep(min(follow_seconds_int, 5))  # Cap at 5 seconds for safety
             
             # If no stdout/stderr was requested or found, add appropriate message
             if not with_stdout and not with_stderr:

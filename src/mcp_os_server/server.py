@@ -245,7 +245,7 @@ async def _run_unified_server(
         logger.error("Example: ALLOWED_COMMANDS='ls,cat,echo' ALLOWED_DIRS='/tmp,/home/user' mcp-os-server unified-server")
         return
     
-    process_retention_seconds = int(os.getenv("PROCESS_RETENTION_SECONDS", "3600"))
+    process_retention_seconds = int(os.getenv("PROCESS_RETENTION_SECONDS", "300"))
     default_encoding = os.getenv("DEFAULT_ENCODING", get_default_encoding())
     
     # OUTPUT_STORAGE_PATH logic: Use temp dir if not explicitly set
@@ -485,7 +485,7 @@ async def _run_command_server(
         logger.error("Example: ALLOWED_COMMANDS='ls,cat,echo' mcp-os-server command-server")
         return
     
-    process_retention_seconds = int(os.getenv("PROCESS_RETENTION_SECONDS", "3600"))
+    process_retention_seconds = int(os.getenv("PROCESS_RETENTION_SECONDS", "300"))
     default_encoding = os.getenv("DEFAULT_ENCODING", get_default_encoding())
     
     # OUTPUT_STORAGE_PATH logic: Use temp dir if not explicitly set

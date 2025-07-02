@@ -1,6 +1,7 @@
 """
 This module defines custom exceptions for the MCP Command Server.
 """
+from typing import Optional
 
 class CommandServerException(Exception):
     """Base class for all custom command server exceptions."""
@@ -32,7 +33,12 @@ class CommandExecutionError(CommandServerException):
 
 class CommandTimeoutError(CommandServerException):
     """Raised when a command execution times out."""
-    pass
+    
+    def __init__(self, message: str, pid: Optional[str] = None, stdout: Optional[str] = None, stderr: Optional[str] = None):
+        super().__init__(message)
+        self.pid = pid
+        self.stdout = stdout or ""
+        self.stderr = stderr or ""
 
 class ProcessTimeoutError(CommandServerException):
     """Raised when a process execution times out."""
