@@ -378,8 +378,10 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
         return json.dumps(await _do_get_filesystem_info(), indent=2, ensure_ascii=False)
 
 
-def create_server(allowed_dirs: List[str], host: str = "127.0.0.1", port: int = 8000) -> FastMCP:
+def create_server(allowed_dirs: List[str], host: str = "127.0.0.1", port: int = 8000) -> "FilteredFastMCP":
     """创建MCP服务器实例"""
+    # Import locally to avoid circular import
+    from ..filtered_fast_mcp import FilteredFastMCP
 
     # 从环境变量读取额外的允许目录
     env_allowed_dirs_str = os.getenv("ALLOWED_DIRS")
@@ -391,8 +393,8 @@ def create_server(allowed_dirs: List[str], host: str = "127.0.0.1", port: int = 
     # 初始化文件系统服务
     filesystem_service = FilesystemService(allowed_dirs)
 
-    # 创建FastMCP服务器
-    mcp = FastMCP("Filesystem Server", host=host, port=port)
+    # 创建FilteredFastMCP服务器
+    mcp = FilteredFastMCP("Filesystem Server", host=host, port=port)
 
     define_mcp_server(mcp, filesystem_service)
 

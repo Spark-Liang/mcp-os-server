@@ -122,7 +122,7 @@ def define_mcp_server(
                 TextContent(type="text", text=f"**Command timed out with PID: {e.pid}**"),
                 TextContent(type="text", text=f"---\nstdout (partial):\n---\n{e.stdout}\n"),
                 TextContent(type="text", text=f"---\nstderr (partial):\n---\n{e.stderr}\n"),
-                TextContent(type="text", text=f"**Note: Process {e.pid} might still be running. Use command_ps_logs to view continued output.**")
+                TextContent(type="text", text=f"**Note: Process {e.pid} might still be running. Use `command_ps_logs` to view continued output. Or use `timeout` to set a longer timeout.**")
             ]
         except CommandExecutionError as e:
             return [TextContent(type="text", text=f"Command execution failed: {e}")]

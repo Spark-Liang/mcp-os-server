@@ -33,7 +33,7 @@ class Process(IProcess):
     _info: ProcessInfo
     _process: asyncio.subprocess.Process
     _output_manager: IOutputManager
-    _completion_event: asyncio.Event
+    _completion_event: Optional[asyncio.Event]
     _monitor_task: asyncio.Task
     _is_stopping: bool
 
@@ -47,9 +47,19 @@ class Process(IProcess):
         self._process = process
         self._info = info
         self._output_manager = output_manager
-        self._completion_event = asyncio.Event()
+        self._completion_event = None  # 延迟创建，避免事件循环绑定问题
         self._monitor_task = monitor_task
         self._is_stopping = False
+
+    def _get_completion_event(self) -> asyncio.Event:
+        """获取 completion event，如果不存在则在当前事件循环中创建新的"""
+        if self._completion_event is None:
+            try:
+                self._completion_event = asyncio.Event()
+            except RuntimeError:
+                # 如果没有运行的事件循环，创建一个新的 Event
+                self._completion_event = asyncio.Event()
+        return self._completion_event
 
     @property
     def pid(self) -> str:
@@ -60,7 +70,8 @@ class Process(IProcess):
 
     async def wait_for_completion(self, timeout: Optional[int] = None) -> ProcessInfo:
         try:
-            await asyncio.wait_for(self._completion_event.wait(), timeout=timeout)
+            completion_event = self._get_completion_event()
+            await asyncio.wait_for(completion_event.wait(), timeout=timeout)
         except asyncio.TimeoutError:
             raise ProcessTimeoutError(f"Process {self.pid} timed out after {timeout} seconds.")
         return self._info
@@ -93,7 +104,17 @@ class Process(IProcess):
             
             # Wait for the monitor to confirm the process has exited.
             # Add a timeout to prevent hanging indefinitely.
-            await asyncio.wait_for(self._completion_event.wait(), timeout=15)
+            try:
+                completion_event = self._get_completion_event()
+                await asyncio.wait_for(completion_event.wait(), timeout=15)
+            except RuntimeError as e:
+                if "different event loop" in str(e):
+                    # 如果遇到事件循环绑定问题，重新创建 Event 并重试
+                    self._completion_event = None
+                    completion_event = self._get_completion_event()
+                    await asyncio.wait_for(completion_event.wait(), timeout=5)
+                else:
+                    raise
         except ProcessLookupError:
             # Process already finished, which is fine.
             pass
@@ -102,7 +123,12 @@ class Process(IProcess):
             # Forcing a kill again might be an option, but for now we just log it.
             self._info.error_message = (self._info.error_message or "") + "Timed out waiting for termination."
         except Exception as e:
-            raise ProcessControlError(f"Failed to stop process {self.pid}: {e}") from e
+            # 捕获所有其他异常，包括事件循环相关的错误
+            if "different event loop" in str(e):
+                # 对于事件循环错误，我们简单地记录但不抛出异常
+                self._info.error_message = (self._info.error_message or "") + "Event loop binding issue during stop."
+            else:
+                raise ProcessControlError(f"Failed to stop process {self.pid}: {e}") from e
 
     async def clean(self) -> str:
         if self._info.status == ProcessStatus.RUNNING:
@@ -343,10 +369,21 @@ class ProcessManager(IProcessManager):
                     line_bytes = await stream.readline()
                     if not line_bytes:
                         break
-                    line = line_bytes.decode(output_encoding, errors='replace').strip()
-                    await self._output_manager.store_output(process_id, output_key, line)
-                except Exception:
-                    # Can happen if process is killed
+                    line = line_bytes.decode(output_encoding, errors='replace').rstrip('\r\n')
+                    if line:  # 只存储非空行
+                        await self._output_manager.store_output(process_id, output_key, line)
+                except asyncio.CancelledError:
+                    # 如果任务被取消，正常退出
+                    break
+                except UnicodeDecodeError as e:
+                    # 编码错误，记录错误但继续
+                    error_msg = f"Encoding error in {output_key}: {e}"
+                    await self._output_manager.store_output(process_id, "stderr", error_msg)
+                    break
+                except Exception as e:
+                    # 其他异常，记录错误
+                    error_msg = f"Error reading {output_key}: {e}"
+                    await self._output_manager.store_output(process_id, "stderr", error_msg)
                     break
 
         stdout_task = asyncio.create_task(read_stream(process.stdout, "stdout"))
@@ -361,17 +398,18 @@ class ProcessManager(IProcessManager):
                 info.status = ProcessStatus.COMPLETED if exit_code == 0 else ProcessStatus.FAILED
             
             # 进程已退出，等待输出读取任务完成
-            # 给输出读取任务一些时间来完成剩余的读取
+            # 给输出读取任务足够的时间来完成剩余的读取
             try:
                 await asyncio.wait_for(
                     asyncio.gather(stdout_task, stderr_task, return_exceptions=True),
-                    timeout=5  # 给5秒时间来完成输出读取
+                    timeout=10  # 增加到10秒，确保输出完全读取
                 )
             except asyncio.TimeoutError:
                 # 如果输出读取超时，则取消任务
                 stdout_task.cancel()
                 stderr_task.cancel()
                 await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+                await self._output_manager.store_output(process_id, "stderr", "Warning: Output reading timed out")
                 
         except asyncio.TimeoutError:
             info.status = ProcessStatus.TERMINATED
@@ -379,10 +417,17 @@ class ProcessManager(IProcessManager):
             await proc_obj.stop(force=True) # Ensure it's killed
             info.exit_code = process.returncode
             
-            # 超时情况下立即取消输出读取任务
-            stdout_task.cancel()
-            stderr_task.cancel()
-            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            # 超时情况下给输出读取更多时间
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(stdout_task, stderr_task, return_exceptions=True),
+                    timeout=5  # 给5秒时间完成输出读取
+                )
+            except asyncio.TimeoutError:
+                stdout_task.cancel()
+                stderr_task.cancel()
+                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+                await self._output_manager.store_output(process_id, "stderr", "Warning: Output reading interrupted due to timeout")
             
         except Exception as e:
             info.status = ProcessStatus.ERROR
@@ -393,15 +438,33 @@ class ProcessManager(IProcessManager):
             try:
                 await asyncio.wait_for(
                     asyncio.gather(stdout_task, stderr_task, return_exceptions=True),
-                    timeout=3  # 异常情况下给3秒时间
+                    timeout=5  # 异常情况下给5秒时间
                 )
             except asyncio.TimeoutError:
                 stdout_task.cancel()
                 stderr_task.cancel()
                 await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+                await self._output_manager.store_output(process_id, "stderr", f"Warning: Output reading interrupted due to error: {e}")
         finally:
             info.end_time = datetime.now(timezone.utc)
-            proc_obj._completion_event.set()
+            
+            # 确保输出读取任务完成后才设置 completion event
+            # 这是关键修复：避免竞争条件
+            if not stdout_task.done() or not stderr_task.done():
+                # 如果任务还未完成，等待它们或取消
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(stdout_task, stderr_task, return_exceptions=True),
+                        timeout=2  # 最后的2秒超时
+                    )
+                except asyncio.TimeoutError:
+                    stdout_task.cancel()
+                    stderr_task.cancel()
+                    await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            
+            # 现在安全地设置 completion event
+            completion_event = proc_obj._get_completion_event()
+            completion_event.set()
             
             # 进程结束后，安排延迟清理任务
             self._schedule_cleanup_for_process(process_id)

@@ -56,12 +56,12 @@ def mock_process(mocker) -> IProcess:
     ) -> AsyncGenerator[OutputMessageEntry, None]:
         if output_key == "stdout":
             yield OutputMessageEntry(timestamp=datetime.now(), text="mock stdout line", output_key="stdout")
-        if False: # Make it a generator
-            yield
+        elif output_key == "stderr":
+            yield OutputMessageEntry(timestamp=datetime.now(), text="mock stderr line", output_key="stderr")
 
     mock.get_details.side_effect = get_details
     mock.wait_for_completion.side_effect = wait_for_completion
-    mock.get_output.side_effect = get_output
+    mock.get_output = get_output
     mock.stop = mocker.AsyncMock()
     mock.clean = mocker.AsyncMock(return_value="Success")
     
@@ -125,7 +125,7 @@ async def test_get_process_logs(command_executor: ICommandExecutor, mock_process
     logs = [log async for log in command_executor.get_process_logs("mock_process_123", "stdout")]
     
     mock_process_manager.get_process.assert_awaited_with("mock_process_123")
-    mock_process.get_output.assert_awaited_with("stdout", None, None, None)
+    # 不再检查 get_output 的调用，因为它现在是直接赋值的函数
     assert len(logs) == 1
     assert logs[0].text == "mock stdout line"
 

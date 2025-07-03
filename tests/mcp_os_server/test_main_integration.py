@@ -1379,3 +1379,494 @@ class TestUnifiedServerIntegration:
         assert "成功写入" in fs_result[0].text
         
         print("✅ Unified server both capabilities test passed", file=sys.stderr)
+
+# Test filtering functionality with environment variables
+@pytest.mark.timeout(60)
+class TestEnvironmentVariableFiltering:
+    """Integration tests for environment variable filtering functionality."""
+
+    async def call_tool(self, session: ClientSession, tool_name: str, arguments: dict) -> Sequence[TextContent]:
+        """Helper method to call a tool via MCP ClientSession with retry logic."""
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                result = await session.call_tool(tool_name, arguments)
+                # Filter and return only TextContent items
+                text_contents = [content for content in result.content if isinstance(content, TextContent)]
+                return text_contents
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    print(f"Tool call failed after {max_retries} attempts: {e}", file=sys.stderr)
+                    raise
+                print(f"Tool call attempt {attempt + 1} failed: {e}, retrying...", file=sys.stderr)
+                await asyncio.sleep(0.1)
+        
+        # This line should never be reached due to the raise in the loop, but added for type safety
+        return []
+
+    @pytest_asyncio.fixture(scope="function")
+    async def mcp_client_session_with_filtering(self, tmp_path) -> AsyncGenerator[ClientSession, None]:
+        """
+        Pytest fixture to start and manage the lifecycle of the MCP unified server
+        with environment variable filtering for tests.
+        """
+        # Get the absolute path to the project root
+        project_root = Path(__file__).parent.parent.parent.resolve()
+        
+        # Set up environment variables for the unified server
+        env = os.environ.copy()
+        env["ALLOWED_COMMANDS"] = "echo,ls,sleep,cat,grep,pwd," + sys.executable
+        env["ALLOWED_DIRS"] = str(tmp_path)
+        # Disable output manager logging to avoid stdio interference
+        env["OUTPUT_STORAGE_PATH"] = str(tempfile.mkdtemp())
+        
+        # Add filtering environment variables for testing
+        env["DISABLE_TOOLS"] = "command_execute,fs_read_file"
+        env["DISABLE_RESOURCES"] = "file,directory"
+        
+        cmd, args = _get_server_start_params(
+            server_type="unified",
+            mode="stdio",
+            project_root=project_root,
+            env=env
+        )
+
+        server_params = StdioServerParameters(
+            command=cmd,
+            args=args,
+            env=env,
+        )
+        print(f"Starting MCP unified server with filtering from project: {project_root}", file=sys.stderr)
+        print(f"Environment: DISABLE_TOOLS={env.get('DISABLE_TOOLS')}", file=sys.stderr)
+        print(f"Environment: DISABLE_RESOURCES={env.get('DISABLE_RESOURCES')}", file=sys.stderr)
+
+        session = None
+        stdio_context = None
+        
+        try:
+            print("Initializing MCP unified session with filtering...", file=sys.stderr)
+            stdio_context = stdio_client(server_params)
+            
+            # Add longer timeout for session initialization
+            read, write = await asyncio.wait_for(stdio_context.__aenter__(), timeout=30.0)
+            print("Stdio streams established", file=sys.stderr)
+            
+            # Create session
+            session = ClientSession(read, write)
+            await session.__aenter__()
+            print("Client session created", file=sys.stderr)
+            
+            # Initialize session with retry logic and longer timeout
+            max_retries = 5
+            for attempt in range(max_retries):
+                try:
+                    print(f"Attempting session initialization (attempt {attempt + 1})...", file=sys.stderr)
+                    await asyncio.wait_for(session.initialize(), timeout=20.0)
+                    print("MCP Unified Client Session with filtering initialized.", file=sys.stderr)
+                    break
+                except asyncio.TimeoutError:
+                    print(f"Session initialization timeout on attempt {attempt + 1}", file=sys.stderr)
+                    if attempt == max_retries - 1:
+                        raise
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        print(f"Failed to initialize session after {max_retries} attempts: {e}", file=sys.stderr)
+                        raise
+                    print(f"Session initialization attempt {attempt + 1} failed: {e}, retrying...", file=sys.stderr)
+                    await asyncio.sleep(0.5)
+            
+            yield session  # Provide the session to the tests
+            
+        except Exception as e:
+            print(f"Error in MCP unified client session setup: {e}", file=sys.stderr)
+            import traceback
+            print(f"Full traceback: {traceback.format_exc()}", file=sys.stderr)
+            raise
+        finally:
+            # Improved cleanup with proper ordering and exception handling
+            cleanup_errors = []
+            
+            # Step 1: Close the session first
+            if session is not None:
+                try:
+                    # Give any ongoing operations time to complete
+                    await asyncio.sleep(0.1)
+                    await session.__aexit__(None, None, None)
+                    print("Unified session cleaned up successfully", file=sys.stderr)
+                except Exception as e:
+                    cleanup_errors.append(f"Session cleanup error: {e}")
+            
+            # Step 2: Close the stdio context
+            if stdio_context is not None:
+                try:
+                    # Give the server time to process the session close
+                    await asyncio.sleep(0.2)
+                    await stdio_context.__aexit__(None, None, None)
+                    print("Unified stdio context cleaned up successfully", file=sys.stderr)
+                except Exception as e:
+                    cleanup_errors.append(f"Stdio cleanup error: {e}")
+            
+            # Report any cleanup errors but don't raise them
+            if cleanup_errors:
+                for error in cleanup_errors:
+                    print(f"Warning: {error}", file=sys.stderr)
+                    
+            print("MCP Unified Client Session with filtering closed and server stopped.", file=sys.stderr)
+
+    @pytest.mark.asyncio
+    async def test_disable_tools_filtering(self, mcp_client_session_with_filtering: ClientSession):
+        """Test DISABLE_TOOLS environment variable filtering."""
+        print("Running test_disable_tools_filtering...", file=sys.stderr)
+        
+        # Test that we can list tools
+        tools = await mcp_client_session_with_filtering.list_tools()
+        tool_names = [tool.name for tool in tools.tools]
+        
+        print(f"Available tools after filtering: {tool_names}", file=sys.stderr)
+        
+        # Verify that disabled tools are not present
+        disabled_tools = ["command_execute", "fs_read_file"]
+        for tool in disabled_tools:
+            assert tool not in tool_names, f"Disabled tool '{tool}' should not be in {tool_names}"
+        
+        # Verify that other tools are still present
+        expected_tools = [
+            "command_bg_start", 
+            "command_ps_list",
+            "fs_write_file",
+            "fs_create_directory"
+        ]
+        
+        for tool in expected_tools:
+            assert tool in tool_names, f"Expected tool '{tool}' should be present in {tool_names}"
+        
+        print("✅ DISABLE_TOOLS filtering test passed", file=sys.stderr)
+
+    @pytest.mark.asyncio
+    async def test_disable_resources_filtering(self, mcp_client_session_with_filtering: ClientSession):
+        """Test DISABLE_RESOURCES environment variable filtering."""
+        print("Running test_disable_resources_filtering...", file=sys.stderr)
+        
+        # Test that we can list resources
+        resources = await mcp_client_session_with_filtering.list_resources()
+        resource_uris = [str(resource.uri) for resource in resources.resources]
+        
+        print(f"Available resources after filtering: {resource_uris}", file=sys.stderr)
+        
+        # Verify that disabled resource types are not present
+        disabled_resources = ["file", "directory"]
+        for resource_type in disabled_resources:
+            for uri in resource_uris:
+                assert not uri.startswith(f"{resource_type}://"), f"Disabled resource type '{resource_type}' should not be in {resource_uris}"
+        
+        # Verify that config resources are still present
+        config_resources = [uri for uri in resource_uris if uri.startswith("config://")]
+        assert len(config_resources) > 0, f"Config resources should still be present in {resource_uris}"
+        
+        print("✅ DISABLE_RESOURCES filtering test passed", file=sys.stderr)
+
+    @pytest_asyncio.fixture(scope="function")
+    async def mcp_client_session_enable_only(self, tmp_path) -> AsyncGenerator[ClientSession, None]:
+        """
+        Pytest fixture with ENABLE_TOOLS_ONLY and ENABLE_RESOURCES_ONLY filtering.
+        """
+        # Get the absolute path to the project root
+        project_root = Path(__file__).parent.parent.parent.resolve()
+        
+        # Set up environment variables for the unified server
+        env = os.environ.copy()
+        env["ALLOWED_COMMANDS"] = "echo,ls,sleep,cat,grep,pwd," + sys.executable
+        env["ALLOWED_DIRS"] = str(tmp_path)
+        # Disable output manager logging to avoid stdio interference
+        env["OUTPUT_STORAGE_PATH"] = str(tempfile.mkdtemp())
+        
+        # Add filtering environment variables - enable only specific tools/resources
+        env["ENABLE_TOOLS_ONLY"] = "command_bg_start,fs_write_file,fs_get_filesystem_info"
+        env["ENABLE_RESOURCES_ONLY"] = "config"
+        
+        cmd, args = _get_server_start_params(
+            server_type="unified",
+            mode="stdio",
+            project_root=project_root,
+            env=env
+        )
+
+        server_params = StdioServerParameters(
+            command=cmd,
+            args=args,
+            env=env,
+        )
+        print(f"Starting MCP unified server with enable-only filtering from project: {project_root}", file=sys.stderr)
+        print(f"Environment: ENABLE_TOOLS_ONLY={env.get('ENABLE_TOOLS_ONLY')}", file=sys.stderr)
+        print(f"Environment: ENABLE_RESOURCES_ONLY={env.get('ENABLE_RESOURCES_ONLY')}", file=sys.stderr)
+
+        session = None
+        stdio_context = None
+        
+        try:
+            print("Initializing MCP unified session with enable-only filtering...", file=sys.stderr)
+            stdio_context = stdio_client(server_params)
+            
+            # Add longer timeout for session initialization
+            read, write = await asyncio.wait_for(stdio_context.__aenter__(), timeout=30.0)
+            print("Stdio streams established", file=sys.stderr)
+            
+            # Create session
+            session = ClientSession(read, write)
+            await session.__aenter__()
+            print("Client session created", file=sys.stderr)
+            
+            # Initialize session with retry logic and longer timeout
+            max_retries = 5
+            for attempt in range(max_retries):
+                try:
+                    print(f"Attempting session initialization (attempt {attempt + 1})...", file=sys.stderr)
+                    await asyncio.wait_for(session.initialize(), timeout=20.0)
+                    print("MCP Unified Client Session with enable-only filtering initialized.", file=sys.stderr)
+                    break
+                except asyncio.TimeoutError:
+                    print(f"Session initialization timeout on attempt {attempt + 1}", file=sys.stderr)
+                    if attempt == max_retries - 1:
+                        raise
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        print(f"Failed to initialize session after {max_retries} attempts: {e}", file=sys.stderr)
+                        raise
+                    print(f"Session initialization attempt {attempt + 1} failed: {e}, retrying...", file=sys.stderr)
+                    await asyncio.sleep(0.5)
+            
+            yield session  # Provide the session to the tests
+            
+        except Exception as e:
+            print(f"Error in MCP unified client session setup: {e}", file=sys.stderr)
+            import traceback
+            print(f"Full traceback: {traceback.format_exc()}", file=sys.stderr)
+            raise
+        finally:
+            # Improved cleanup with proper ordering and exception handling
+            cleanup_errors = []
+            
+            # Step 1: Close the session first
+            if session is not None:
+                try:
+                    # Give any ongoing operations time to complete
+                    await asyncio.sleep(0.1)
+                    await session.__aexit__(None, None, None)
+                    print("Unified session cleaned up successfully", file=sys.stderr)
+                except Exception as e:
+                    cleanup_errors.append(f"Session cleanup error: {e}")
+            
+            # Step 2: Close the stdio context
+            if stdio_context is not None:
+                try:
+                    # Give the server time to process the session close
+                    await asyncio.sleep(0.2)
+                    await stdio_context.__aexit__(None, None, None)
+                    print("Unified stdio context cleaned up successfully", file=sys.stderr)
+                except Exception as e:
+                    cleanup_errors.append(f"Stdio cleanup error: {e}")
+            
+            # Report any cleanup errors but don't raise them
+            if cleanup_errors:
+                for error in cleanup_errors:
+                    print(f"Warning: {error}", file=sys.stderr)
+                    
+            print("MCP Unified Client Session with enable-only filtering closed and server stopped.", file=sys.stderr)
+
+    @pytest.mark.asyncio
+    async def test_enable_tools_only_filtering(self, mcp_client_session_enable_only: ClientSession):
+        """Test ENABLE_TOOLS_ONLY environment variable filtering."""
+        print("Running test_enable_tools_only_filtering...", file=sys.stderr)
+        
+        # Test that we can list tools
+        tools = await mcp_client_session_enable_only.list_tools()
+        tool_names = [tool.name for tool in tools.tools]
+        
+        print(f"Available tools with enable-only filtering: {tool_names}", file=sys.stderr)
+        
+        # Verify that only enabled tools are present
+        expected_tools = ["command_bg_start", "fs_write_file", "fs_get_filesystem_info"]
+        for tool in expected_tools:
+            assert tool in tool_names, f"Expected enabled tool '{tool}' should be in {tool_names}"
+        
+        # Verify that other tools are not present
+        excluded_tools = ["command_execute", "fs_read_file", "command_ps_list", "fs_create_directory"]
+        for tool in excluded_tools:
+            assert tool not in tool_names, f"Excluded tool '{tool}' should not be in {tool_names}"
+        
+        # Verify that we have exactly the expected number of tools
+        assert len(tool_names) == len(expected_tools), f"Expected exactly {len(expected_tools)} tools, got {len(tool_names)}: {tool_names}"
+        
+        print("✅ ENABLE_TOOLS_ONLY filtering test passed", file=sys.stderr)
+
+    @pytest.mark.asyncio
+    async def test_enable_resources_only_filtering(self, mcp_client_session_enable_only: ClientSession):
+        """Test ENABLE_RESOURCES_ONLY environment variable filtering."""
+        print("Running test_enable_resources_only_filtering...", file=sys.stderr)
+        
+        # Test that we can list resources
+        resources = await mcp_client_session_enable_only.list_resources()
+        resource_uris = [str(resource.uri) for resource in resources.resources]
+        
+        print(f"Available resources with enable-only filtering: {resource_uris}", file=sys.stderr)
+        
+        # Verify that only config resources are present
+        for uri in resource_uris:
+            assert uri.startswith("config://"), f"Only config resources should be present, found: {uri}"
+        
+        # Verify that we have at least one config resource
+        assert len(resource_uris) > 0, "Should have at least one config resource"
+        
+        print("✅ ENABLE_RESOURCES_ONLY filtering test passed", file=sys.stderr)
+
+    @pytest_asyncio.fixture(scope="function")
+    async def mcp_client_session_priority_test(self, tmp_path) -> AsyncGenerator[ClientSession, None]:
+        """
+        Pytest fixture to test priority: ENABLE_X_ONLY should override DISABLE_X.
+        """
+        # Get the absolute path to the project root
+        project_root = Path(__file__).parent.parent.parent.resolve()
+        
+        # Set up environment variables for the unified server
+        env = os.environ.copy()
+        env["ALLOWED_COMMANDS"] = "echo,ls,sleep,cat,grep,pwd," + sys.executable
+        env["ALLOWED_DIRS"] = str(tmp_path)
+        # Disable output manager logging to avoid stdio interference
+        env["OUTPUT_STORAGE_PATH"] = str(tempfile.mkdtemp())
+        
+        # Set both DISABLE and ENABLE_ONLY - ENABLE_ONLY should take priority
+        env["DISABLE_TOOLS"] = "command_bg_start,fs_write_file"  # This should be ignored
+        env["ENABLE_TOOLS_ONLY"] = "command_bg_start,fs_get_filesystem_info"  # This should take priority
+        env["DISABLE_RESOURCES"] = "config"  # This should be ignored
+        env["ENABLE_RESOURCES_ONLY"] = "config,file"  # This should take priority
+        
+        cmd, args = _get_server_start_params(
+            server_type="unified",
+            mode="stdio",
+            project_root=project_root,
+            env=env
+        )
+
+        server_params = StdioServerParameters(
+            command=cmd,
+            args=args,
+            env=env,
+        )
+        print(f"Starting MCP unified server with priority test from project: {project_root}", file=sys.stderr)
+        print(f"Environment: DISABLE_TOOLS={env.get('DISABLE_TOOLS')} (should be ignored)", file=sys.stderr)
+        print(f"Environment: ENABLE_TOOLS_ONLY={env.get('ENABLE_TOOLS_ONLY')} (should take priority)", file=sys.stderr)
+        print(f"Environment: DISABLE_RESOURCES={env.get('DISABLE_RESOURCES')} (should be ignored)", file=sys.stderr)
+        print(f"Environment: ENABLE_RESOURCES_ONLY={env.get('ENABLE_RESOURCES_ONLY')} (should take priority)", file=sys.stderr)
+
+        session = None
+        stdio_context = None
+        
+        try:
+            print("Initializing MCP unified session with priority test...", file=sys.stderr)
+            stdio_context = stdio_client(server_params)
+            
+            # Add longer timeout for session initialization
+            read, write = await asyncio.wait_for(stdio_context.__aenter__(), timeout=30.0)
+            print("Stdio streams established", file=sys.stderr)
+            
+            # Create session
+            session = ClientSession(read, write)
+            await session.__aenter__()
+            print("Client session created", file=sys.stderr)
+            
+            # Initialize session with retry logic and longer timeout
+            max_retries = 5
+            for attempt in range(max_retries):
+                try:
+                    print(f"Attempting session initialization (attempt {attempt + 1})...", file=sys.stderr)
+                    await asyncio.wait_for(session.initialize(), timeout=20.0)
+                    print("MCP Unified Client Session with priority test initialized.", file=sys.stderr)
+                    break
+                except asyncio.TimeoutError:
+                    print(f"Session initialization timeout on attempt {attempt + 1}", file=sys.stderr)
+                    if attempt == max_retries - 1:
+                        raise
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        print(f"Failed to initialize session after {max_retries} attempts: {e}", file=sys.stderr)
+                        raise
+                    print(f"Session initialization attempt {attempt + 1} failed: {e}, retrying...", file=sys.stderr)
+                    await asyncio.sleep(0.5)
+            
+            yield session  # Provide the session to the tests
+            
+        except Exception as e:
+            print(f"Error in MCP unified client session setup: {e}", file=sys.stderr)
+            import traceback
+            print(f"Full traceback: {traceback.format_exc()}", file=sys.stderr)
+            raise
+        finally:
+            # Improved cleanup with proper ordering and exception handling
+            cleanup_errors = []
+            
+            # Step 1: Close the session first
+            if session is not None:
+                try:
+                    # Give any ongoing operations time to complete
+                    await asyncio.sleep(0.1)
+                    await session.__aexit__(None, None, None)
+                    print("Unified session cleaned up successfully", file=sys.stderr)
+                except Exception as e:
+                    cleanup_errors.append(f"Session cleanup error: {e}")
+            
+            # Step 2: Close the stdio context
+            if stdio_context is not None:
+                try:
+                    # Give the server time to process the session close
+                    await asyncio.sleep(0.2)
+                    await stdio_context.__aexit__(None, None, None)
+                    print("Unified stdio context cleaned up successfully", file=sys.stderr)
+                except Exception as e:
+                    cleanup_errors.append(f"Stdio cleanup error: {e}")
+            
+            # Report any cleanup errors but don't raise them
+            if cleanup_errors:
+                for error in cleanup_errors:
+                    print(f"Warning: {error}", file=sys.stderr)
+                    
+            print("MCP Unified Client Session with priority test closed and server stopped.", file=sys.stderr)
+
+    @pytest.mark.asyncio
+    async def test_environment_variable_priority(self, mcp_client_session_priority_test: ClientSession):
+        """Test that ENABLE_X_ONLY takes priority over DISABLE_X."""
+        print("Running test_environment_variable_priority...", file=sys.stderr)
+        
+        # Test tools priority
+        tools = await mcp_client_session_priority_test.list_tools()
+        tool_names = [tool.name for tool in tools.tools]
+        
+        print(f"Available tools with priority test: {tool_names}", file=sys.stderr)
+        
+        # command_bg_start should be present because ENABLE_TOOLS_ONLY overrides DISABLE_TOOLS
+        assert "command_bg_start" in tool_names, f"'command_bg_start' should be enabled despite being in DISABLE_TOOLS: {tool_names}"
+        assert "fs_get_filesystem_info" in tool_names, f"'fs_get_filesystem_info' should be enabled: {tool_names}"
+        
+        # Other tools should not be present
+        excluded_tools = ["fs_write_file", "command_execute", "fs_read_file"]
+        for tool in excluded_tools:
+            assert tool not in tool_names, f"Tool '{tool}' should not be present: {tool_names}"
+        
+        # Test resources priority
+        resources = await mcp_client_session_priority_test.list_resources()
+        resource_uris = [str(resource.uri) for resource in resources.resources]
+        
+        print(f"Available resources with priority test: {resource_uris}", file=sys.stderr)
+        
+        # config resources should be present because ENABLE_RESOURCES_ONLY overrides DISABLE_RESOURCES
+        config_resources = [uri for uri in resource_uris if uri.startswith("config://")]
+        assert len(config_resources) > 0, f"Config resources should still be present in {resource_uris}"
+        
+        # Both config and file resources should be present per ENABLE_RESOURCES_ONLY
+        allowed_prefixes = ["config://", "file://"]
+        for uri in resource_uris:
+            assert any(uri.startswith(prefix) for prefix in allowed_prefixes), f"Resource {uri} should start with one of {allowed_prefixes}"
+        
+        print("✅ Environment variable priority test passed", file=sys.stderr)

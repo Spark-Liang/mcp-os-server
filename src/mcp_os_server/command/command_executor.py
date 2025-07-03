@@ -68,15 +68,9 @@ class CommandExecutor(ICommandExecutor):
             # 超时时收集已有的输出
             tail_limit = limit_lines if limit_lines is not None else None
             
-            stdout_output = process.get_output("stdout", tail=tail_limit)
-            if asyncio.iscoroutine(stdout_output):
-                stdout_output = await stdout_output
-            stdout_lines = [log.text async for log in stdout_output]
-            
-            stderr_output = process.get_output("stderr", tail=tail_limit)
-            if asyncio.iscoroutine(stderr_output):
-                stderr_output = await stderr_output
-            stderr_lines = [log.text async for log in stderr_output]
+            # 直接使用 async for 获取输出，无需检查是否为协程
+            stdout_lines = [log.text async for log in process.get_output("stdout", tail=tail_limit)]
+            stderr_lines = [log.text async for log in process.get_output("stderr", tail=tail_limit)]
             
             raise CommandTimeoutError(
                 f"Command '{' '.join(command)}' timed out.",
@@ -92,15 +86,9 @@ class CommandExecutor(ICommandExecutor):
         # 否则获取所有输出
         tail_limit = limit_lines if limit_lines is not None else None
         
-        stdout_output = process.get_output("stdout", tail=tail_limit)
-        if asyncio.iscoroutine(stdout_output):
-            stdout_output = await stdout_output
-        stdout_lines = [log.text async for log in stdout_output]
-
-        stderr_output = process.get_output("stderr", tail=tail_limit)
-        if asyncio.iscoroutine(stderr_output):
-            stderr_output = await stderr_output
-        stderr_lines = [log.text async for log in stderr_output]
+        # 直接使用 async for 获取输出，无需检查是否为协程
+        stdout_lines = [log.text async for log in process.get_output("stdout", tail=tail_limit)]
+        stderr_lines = [log.text async for log in process.get_output("stderr", tail=tail_limit)]
 
         return CommandResult(
             stdout="\n".join(stdout_lines),
@@ -149,10 +137,8 @@ class CommandExecutor(ICommandExecutor):
         tail: Optional[int] = None,
     ) -> AsyncGenerator[OutputMessageEntry, None]:
         process = await self._process_manager.get_process(process_id)
-        logs_output = process.get_output(output_key, since, until, tail)
-        if asyncio.iscoroutine(logs_output):
-            logs_output = await logs_output
-        async for log in logs_output:
+        # 直接使用 async for，无需检查是否为协程
+        async for log in process.get_output(output_key, since, until, tail):
             yield log
 
     async def stop_process(

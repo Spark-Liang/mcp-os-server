@@ -20,12 +20,19 @@ import socket
 import click
 from mcp.server.fastmcp import FastMCP
 from mcp.types import TextContent
+from mcp.types import Tool as MCPTool
+from mcp.types import Resource as MCPResource
+from mcp.types import ResourceTemplate as MCPResourceTemplate
 
 from .command.command_executor import CommandExecutor
 from .command.output_manager import OutputManager
 from .command.process_manager import ProcessManager
 from .command.web_manager import WebManager
 from .filesystem.server import create_server as create_filesystem_server
+from .filtered_fast_mcp import FilteredFastMCP
+
+
+
 
 
 def setup_logger(mode: str) -> logging.Logger:
@@ -75,46 +82,7 @@ def parse_allowed_directories(allowed_dirs_str: str) -> List[str]:
     return [dir_path for dir_path in dirs if dir_path]
 
 
-def should_include_tool(tool_name: str) -> bool:
-    """Check if a tool should be included based on environment variables."""
-    disable_tools = os.getenv("DISABLE_TOOLS", "")
-    enable_tools_only = os.getenv("ENABLE_TOOLS_ONLY", "")
-    
-    # Parse environment variables
-    disabled_tools = [tool.strip() for tool in disable_tools.split(",") if tool.strip()]
-    enabled_tools_only = [tool.strip() for tool in enable_tools_only.split(",") if tool.strip()]
-    
-    # If ENABLE_TOOLS_ONLY is set, only include tools in that list
-    if enabled_tools_only:
-        return tool_name in enabled_tools_only
-    
-    # If DISABLE_TOOLS is set, exclude tools in that list
-    if disabled_tools:
-        return tool_name not in disabled_tools
-    
-    # Default: include all tools
-    return True
 
-
-def should_include_resource(resource_name: str) -> bool:
-    """Check if a resource should be included based on environment variables."""
-    disable_resources = os.getenv("DISABLE_RESOURCES", "")
-    enable_resources_only = os.getenv("ENABLE_RESOURCES_ONLY", "")
-    
-    # Parse environment variables
-    disabled_resources = [res.strip() for res in disable_resources.split(",") if res.strip()]
-    enabled_resources_only = [res.strip() for res in enable_resources_only.split(",") if res.strip()]
-    
-    # If ENABLE_RESOURCES_ONLY is set, only include resources in that list
-    if enabled_resources_only:
-        return resource_name in enabled_resources_only
-    
-    # If DISABLE_RESOURCES is set, exclude resources in that list
-    if disabled_resources:
-        return resource_name not in disabled_resources
-    
-    # Default: include all resources
-    return True
 
 
 def get_default_encoding() -> str:
@@ -296,7 +264,7 @@ async def _run_unified_server(
             enable_web_manager = False
     
     # Create unified FastMCP instance
-    mcp = FastMCP("mcp-unified-server", host=host, port=port)
+    mcp = FilteredFastMCP("mcp-unified-server", host=host, port=port)
     
     # Define command server tools if allowed
     if command_executor and allowed_commands:
@@ -531,7 +499,7 @@ async def _run_command_server(
             enable_web_manager = False
     
     # Create FastMCP instance
-    mcp = FastMCP("mcp-command-server", host=host, port=port)
+    mcp = FilteredFastMCP("mcp-command-server", host=host, port=port)
     
     # Define MCP tools
     from .command.server import define_mcp_server
