@@ -148,10 +148,18 @@ class ProcessManager(IProcessManager):
         self._process_retention_seconds = process_retention_seconds
         self._processes: Dict[str, Process] = {}
         self._cleanup_handles: Dict[str, asyncio.Handle] = {}
+        self._main_loop: Optional[asyncio.AbstractEventLoop] = None
 
     async def initialize(self) -> None:
-        # No longer need to start a periodic cleanup task
-        pass
+        """
+        Initialize the process manager and save the current event loop.
+        """
+        try:
+            # Save the current event loop as the main loop
+            self._main_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # If no event loop is running, this will be set later when needed
+            self._main_loop = None
 
     async def shutdown(self) -> None:
         # Cancel all pending cleanup handles
@@ -179,8 +187,19 @@ class ProcessManager(IProcessManager):
     def _schedule_process_cleanup(self, process_id: str) -> None:
         """同步函数，用于call_later调用，创建异步清理任务"""
         if process_id in self._processes:
-            # 创建异步任务来执行清理
-            asyncio.create_task(self._cleanup_single_process(process_id))
+            # 使用主事件循环创建异步任务来执行清理
+            if self._main_loop and not self._main_loop.is_closed():
+                # 创建带名称的任务
+                task = self._main_loop.create_task(
+                    self._cleanup_single_process(process_id),
+                    name=f"cleanup_process_{process_id}"
+                )
+            else:
+                # 如果主循环不可用，使用当前循环
+                task = asyncio.create_task(
+                    self._cleanup_single_process(process_id),
+                    name=f"cleanup_process_{process_id}"
+                )
 
     async def _cleanup_single_process(self, process_id: str) -> None:
         """清理单个进程"""
@@ -294,14 +313,48 @@ class ProcessManager(IProcessManager):
             else:
                 stdin_mode = None
                 
-            process = await asyncio.create_subprocess_exec(
-                *command_to_execute,
-                cwd=directory,
-                stdin=stdin_mode,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=process_envs,
-            )
+            # 使用主事件循环创建子进程，如果主循环不可用则使用默认方法
+            async def _create_subprocess():
+                """带名称的子进程创建函数"""
+                return await asyncio.create_subprocess_exec(
+                    *command_to_execute,
+                    cwd=directory,
+                    stdin=stdin_mode,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=process_envs,
+                )
+            
+            if self._main_loop and not self._main_loop.is_closed():
+                # 临时设置事件循环以确保 create_subprocess_exec 使用正确的循环
+                original_loop = None
+                try:
+                    original_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    pass
+                
+                if original_loop != self._main_loop:
+                    # 如果当前循环不是主循环，需要在主循环中执行
+                    subprocess_task = self._main_loop.create_task(
+                        _create_subprocess(),
+                        name=f"create_subprocess_{process_id}"
+                    )
+                    future = asyncio.run_coroutine_threadsafe(subprocess_task, self._main_loop)
+                    process = await asyncio.wrap_future(future)
+                else:
+                    # 当前就在主循环中，创建带名称的任务
+                    subprocess_task = self._main_loop.create_task(
+                        _create_subprocess(),
+                        name=f"create_subprocess_{process_id}"
+                    )
+                    process = await subprocess_task
+            else:
+                # 主循环不可用，使用默认方法但仍创建带名称的任务
+                subprocess_task = asyncio.create_task(
+                    _create_subprocess(),
+                    name=f"create_subprocess_{process_id}"
+                )
+                process = await subprocess_task
         except FileNotFoundError:
             raise CommandExecutionError(f"Command not found: {original_command[0]}")
         except Exception as e:
@@ -331,7 +384,17 @@ class ProcessManager(IProcessManager):
             labels=labels or [],
         )
 
-        monitor_task = asyncio.create_task(self._monitor_process(process_id, process, timeout, encoding))
+        # 使用主事件循环创建带名称的监控任务
+        if self._main_loop and not self._main_loop.is_closed():
+            monitor_task = self._main_loop.create_task(
+                self._monitor_process(process_id, process, timeout, encoding),
+                name=f"monitor_process_{process_id}"
+            )
+        else:
+            monitor_task = asyncio.create_task(
+                self._monitor_process(process_id, process, timeout, encoding),
+                name=f"monitor_process_{process_id}"
+            )
         
         process_obj = Process(process, info, self._output_manager, monitor_task)
         self._processes[process_id] = process_obj
@@ -386,11 +449,19 @@ class ProcessManager(IProcessManager):
                     await self._output_manager.store_output(process_id, "stderr", error_msg)
                     break
 
-        stdout_task = asyncio.create_task(read_stream(process.stdout, "stdout"))
-        stderr_task = asyncio.create_task(read_stream(process.stderr, "stderr"))
+        stdout_task = asyncio.create_task(
+            read_stream(process.stdout, "stdout"),
+            name=f"read_stdout_{process_id}"
+        )
+        stderr_task = asyncio.create_task(
+            read_stream(process.stderr, "stderr"),
+            name=f"read_stderr_{process_id}"
+        )
 
         try:
-            exit_code = await asyncio.wait_for(process.wait(), timeout=timeout)
+            # 为 process.wait() 创建带名称的任务
+            wait_task = asyncio.create_task(process.wait(), name=f"wait_process_{process_id}")
+            exit_code = await asyncio.wait_for(wait_task, timeout=timeout)
             info.exit_code = exit_code
             if proc_obj._is_stopping:
                 info.status = ProcessStatus.TERMINATED

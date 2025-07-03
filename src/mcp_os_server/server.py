@@ -512,12 +512,15 @@ async def _run_command_server(
     
     # Add command_open_web_manager tool if web manager is enabled
     if enable_web_manager:
-        @mcp.tool()
+        web_url = f"http://{web_host}:{web_port}"
+        @mcp.tool(
+            description=f"在浏览器中打开 Web 管理界面 {web_url}。"
+        )
         async def command_open_web_manager() -> List[TextContent]:
             """
             在浏览器中打开 Web 管理界面。
             """
-            web_url = f"http://{web_host}:{web_port}"
+            
             try:
                 webbrowser.open(web_url)
                 return [TextContent(type="text", text=f"已在浏览器中打开 Web 管理界面: {web_url} 🚀")]

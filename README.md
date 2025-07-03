@@ -741,7 +741,7 @@ MCP OS Server 暴露了以下 MCP 工具，客户端可以通过它们与服务�
 *  **使用 mcp inspector 测试**
 
     ```bash
-    npx -y @modelcontextprotocol/inspector -e ALLOWED_COMMANDS=echo,dir -e ALLOWED_DIRS=E: uv run mcp-os-server command-server --mode stdio --enable-web-manager
+    npx -y @modelcontextprotocol/inspector@0.14.0 -e ALLOWED_COMMANDS=echo,dir,sleep -e ALLOWED_DIRS=E: uv run mcp-os-server command-server --mode stdio --enable-web-manager
     ```
 
 ### 构建可执行文件

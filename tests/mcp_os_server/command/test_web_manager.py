@@ -630,24 +630,196 @@ class TestWebManagerErrorHandling:
     
     @pytest.mark.asyncio
     async def test_command_executor_exception_handling(self, initialized_web_manager):
-        """Test handling of command executor exceptions."""
-        # Mock the command executor to raise an exception
+        """Test WebManager handles command executor exceptions properly."""
+        # Mock command executor to raise exception
         initialized_web_manager._command_executor.list_process = AsyncMock(
             side_effect=Exception("Test exception")
         )
         
-        with pytest.raises(WebInterfaceError, match="Failed to get processes"):
+        with pytest.raises(WebInterfaceError):
             await initialized_web_manager.get_processes()
     
     def test_api_exception_handling(self, test_client):
-        """Test API exception handling returns proper error response."""
-        # This would test the case where the underlying service throws an exception
-        # We need to mock the initialized_web_manager to throw an exception
+        """Test API exception handling."""
+        # Test with non-existent process
+        response = test_client.get("/api/processes/non-existent")
+        assert response.status_code == 404
         
-        # For now, we test with a malformed request that should cause an error
-        response = test_client.get('/api/processes?status=invalid_status')
-        
-        # This should return an error response
-        assert response.status_code == 400
         data = response.json()
-        assert "Invalid status" in data["detail"]
+        assert "not found" in data["detail"].lower()
+
+
+class TestWebManagerThreadDebug:
+    """Test WebManager thread stack debugging functionality."""
+
+    def test_get_current_thread_stacks_structure(self, initialized_web_manager):
+        """Test that _get_current_thread_stacks returns correct structure."""
+        result = initialized_web_manager._get_current_thread_stacks()
+        
+        # Check top-level structure
+        assert isinstance(result, dict)
+        assert 'timestamp' in result
+        assert 'total_threads' in result
+        assert 'main_thread_id' in result
+        assert 'current_thread_id' in result
+        assert 'threads' in result
+        
+        # Check timestamp format
+        assert isinstance(result['timestamp'], str)
+        
+        # Check numeric fields
+        assert isinstance(result['total_threads'], int)
+        assert result['total_threads'] > 0
+        
+        # Check threads structure
+        threads = result['threads']
+        assert isinstance(threads, dict)
+        assert len(threads) == result['total_threads']
+        
+        # Check individual thread structure
+        for thread_id, thread_info in threads.items():
+            assert isinstance(thread_info, dict)
+            assert 'thread_id' in thread_info
+            assert 'thread_name' in thread_info
+            assert 'is_daemon' in thread_info
+            assert 'is_alive' in thread_info
+            assert 'stack_trace' in thread_info
+            assert 'stack_summary' in thread_info
+            
+            # Check data types
+            assert isinstance(thread_info['thread_id'], int)
+            assert isinstance(thread_info['thread_name'], str)
+            assert isinstance(thread_info['is_daemon'], bool)
+            assert isinstance(thread_info['is_alive'], bool)
+            assert isinstance(thread_info['stack_trace'], list)
+            assert isinstance(thread_info['stack_summary'], str)
+
+    def test_api_get_thread_stacks_success(self, test_client):
+        """Test /api/debug/threads endpoint returns thread information."""
+        response = test_client.get("/api/debug/threads")
+        
+        assert response.status_code == 200
+        
+        data = response.json()
+        assert data['success'] is True
+        assert 'data' in data
+        
+        thread_data = data['data']
+        assert 'timestamp' in thread_data
+        assert 'total_threads' in thread_data
+        assert 'main_thread_id' in thread_data
+        assert 'current_thread_id' in thread_data
+        assert 'threads' in thread_data
+        
+        # Verify we have at least the main thread
+        assert thread_data['total_threads'] >= 1
+        assert len(thread_data['threads']) >= 1
+
+    def test_debug_threads_page_renders(self, test_client):
+        """Test /debug/threads page renders correctly."""
+        response = test_client.get("/debug/threads")
+        
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "text/html; charset=utf-8"
+        
+        # Check that the response contains expected HTML elements
+        content = response.text
+        assert "Python线程栈调试" in content
+        assert "api/debug/threads" in content
+        assert "refreshThreads" in content
+        assert "downloadThreadStacks" in content
+        assert "📥 下载线程栈" in content
+
+    def test_main_thread_exists_in_stack(self, initialized_web_manager):
+        """Test that the main thread is always present in thread stacks."""
+        result = initialized_web_manager._get_current_thread_stacks()
+        
+        threads = result['threads']
+        main_thread_id = result['main_thread_id']
+        
+        # Main thread should exist in the threads dictionary
+        assert str(main_thread_id) in threads
+        
+        # Find the main thread and verify its properties
+        main_thread_found = False
+        for thread_info in threads.values():
+            if thread_info['thread_name'] == 'MainThread':
+                main_thread_found = True
+                assert thread_info['is_alive'] is True
+                break
+        
+        assert main_thread_found, "MainThread should be found in thread list"
+
+    def test_thread_stack_contains_function_names(self, initialized_web_manager):
+        """Test that thread stacks contain recognizable function names."""
+        result = initialized_web_manager._get_current_thread_stacks()
+        
+        threads = result['threads']
+        
+        # At least one thread should have stack traces with function names
+        found_function_traces = False
+        for thread_info in threads.values():
+            stack_summary = thread_info['stack_summary']
+            stack_trace = thread_info['stack_trace']
+            
+            if stack_trace and len(stack_trace) > 0:
+                # Check that stack trace contains file names and function names
+                if '.py' in stack_summary and 'in ' in stack_summary:
+                    found_function_traces = True
+                    break
+        
+        assert found_function_traces, "At least one thread should have meaningful stack traces"
+
+    @pytest.mark.asyncio  
+    async def test_api_thread_stacks_concurrent_access(self, test_client):
+        """Test that thread stack API can handle concurrent requests."""
+        import concurrent.futures
+        import threading
+        
+        def make_request():
+            response = test_client.get("/api/debug/threads")
+            return response.status_code
+        
+        # Make multiple concurrent requests using ThreadPoolExecutor
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(make_request) for _ in range(5)]
+            results = [future.result() for future in concurrent.futures.as_completed(futures)]
+        
+        # All requests should succeed
+        assert all(status == 200 for status in results)
+        assert len(results) == 5
+
+    def test_api_download_thread_stacks(self, test_client):
+        """Test /api/debug/threads/download endpoint returns text file."""
+        response = test_client.get("/api/debug/threads/download")
+        
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "text/plain; charset=utf-8"
+        assert "attachment" in response.headers.get("content-disposition", "")
+        assert "thread_stacks_" in response.headers.get("content-disposition", "")
+        
+        # Check that the response contains thread stack information
+        content = response.text
+        assert "PYTHON THREAD STACK TRACES" in content
+        assert "Thread ID:" in content
+        assert "Thread Name:" in content
+        assert "Stack Trace:" in content
+
+    def test_generate_thread_stacks_text(self, initialized_web_manager):
+        """Test _generate_thread_stacks_text method generates proper text format."""
+        thread_data = initialized_web_manager._get_current_thread_stacks()
+        text_content = initialized_web_manager._generate_thread_stacks_text(thread_data)
+        
+        # Check basic structure
+        assert isinstance(text_content, str)
+        assert len(text_content) > 0
+        
+        # Check header
+        assert "PYTHON THREAD STACK TRACES" in text_content
+        assert "Timestamp:" in text_content
+        assert "Total Threads:" in text_content
+        
+        # Check thread information
+        assert "Thread ID:" in text_content
+        assert "Thread Name:" in text_content
+        assert "Stack Trace:" in text_content

@@ -117,10 +117,8 @@ def main():
             "--include-package=mcp",  # 包含依赖包
             "--include-package=asyncio",
             "--include-package=click",
-            "--include-package=flask",
             "--include-package=loguru",
             "--include-package=pydantic",
-            "--include-package=waitress",
             "--warn-unusual-code",  # 对不寻常的代码发出警告
             "--plugin-enable=anti-bloat",  # 减少生成文件大小
             "--plugin-enable=multiprocessing",  # 支持多进程

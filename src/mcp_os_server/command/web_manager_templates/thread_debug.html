@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Command Server - Python线程栈调试</title>
+    <style>
+        /* === 基础样式 === */
+        :root {
+            --primary-color: #007bff;
+            --success-color: #28a745;
+            --danger-color: #dc3545;
+            --warning-color: #fd7e14;
+            --secondary-color: #6c757d;
+            --light-bg: #f8f9fa;
+            --border-color: #e0e0e0;
+            --hover-bg: #e3f2fd;
+            --text-primary: #333;
+            --text-secondary: #7f8c8d;
+            --shadow: 0 2px 20px rgba(0, 0, 0, 0.1);
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: var(--text-primary);
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+        }
+
+        .header {
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            color: #2c3e50;
+            margin: 0;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            text-decoration: none;
+            display: inline-block;
+            transition: all 0.2s;
+        }
+
+        .btn-primary { background-color: var(--primary-color); color: white; }
+        .btn-primary:hover { background-color: #0056b3; }
+
+        .btn-secondary { background-color: var(--secondary-color); color: white; }
+        .btn-secondary:hover { background-color: #545b62; }
+
+        .summary-info {
+            background-color: var(--light-bg);
+            padding: 20px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        .summary-item {
+            text-align: center;
+        }
+
+        .summary-item .value {
+            font-size: 24px;
+            font-weight: bold;
+            color: var(--primary-color);
+        }
+
+        .summary-item .label {
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        .thread-card {
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            margin-bottom: 20px;
+            overflow: hidden;
+        }
+
+        .thread-header {
+            background-color: var(--light-bg);
+            padding: 15px;
+            border-bottom: 1px solid var(--border-color);
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .thread-header:hover {
+            background-color: var(--hover-bg);
+        }
+
+        .thread-title {
+            font-weight: bold;
+            font-size: 16px;
+            margin: 0;
+        }
+
+        .thread-details {
+            font-size: 14px;
+            color: var(--text-secondary);
+            margin: 5px 0 0 0;
+        }
+
+        .thread-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+
+        .badge-daemon {
+            background-color: rgba(253, 126, 20, 0.1);
+            color: var(--warning-color);
+        }
+
+        .badge-main {
+            background-color: rgba(40, 167, 69, 0.1);
+            color: var(--success-color);
+        }
+
+        .badge-current {
+            background-color: rgba(0, 123, 255, 0.1);
+            color: var(--primary-color);
+        }
+
+        .thread-content {
+            display: none;
+            padding: 20px;
+            background-color: #fff;
+        }
+
+        .thread-content.expanded {
+            display: block;
+        }
+
+        .stack-trace {
+            background-color: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 4px;
+            padding: 15px;
+            font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+            font-size: 12px;
+            line-height: 1.4;
+            white-space: pre-wrap;
+            overflow-x: auto;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--text-secondary);
+        }
+
+        .error {
+            background-color: rgba(220, 53, 69, 0.1);
+            color: var(--danger-color);
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+
+        .refresh-controls {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .auto-refresh {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 15px;
+            }
+            
+            .header {
+                flex-direction: column;
+                gap: 15px;
+                align-items: flex-start;
+            }
+            
+            .summary-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🧵 Python线程栈调试</h1>
+            <div class="nav-links">
+                <a href="/" class="btn btn-secondary">← 返回进程列表</a>
+                <button onclick="refreshThreads()" class="btn btn-primary">🔄 刷新</button>
+            </div>
+        </div>
+
+        <div class="refresh-controls">
+            <button onclick="refreshThreads()" class="btn btn-primary">手动刷新</button>
+            <button onclick="downloadThreadStacks()" class="btn btn-secondary">📥 下载线程栈</button>
+            <div class="auto-refresh">
+                <input type="checkbox" id="autoRefresh" onchange="toggleAutoRefresh()">
+                <label for="autoRefresh">自动刷新 (每5秒)</label>
+            </div>
+        </div>
+
+        <div id="summaryInfo" class="summary-info" style="display: none;">
+            <div class="summary-grid">
+                <div class="summary-item">
+                    <div class="value" id="totalThreads">-</div>
+                    <div class="label">总线程数</div>
+                </div>
+                <div class="summary-item">
+                    <div class="value" id="mainThreadId">-</div>
+                    <div class="label">主线程ID</div>
+                </div>
+                <div class="summary-item">
+                    <div class="value" id="currentThreadId">-</div>
+                    <div class="label">当前线程ID</div>
+                </div>
+                <div class="summary-item">
+                    <div class="value" id="lastUpdated">-</div>
+                    <div class="label">最后更新</div>
+                </div>
+            </div>
+        </div>
+
+        <div id="threadsContainer">
+            <div class="loading">
+                <p>正在加载线程信息...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let autoRefreshInterval = null;
+
+        async function refreshThreads() {
+            const container = document.getElementById('threadsContainer');
+            const summaryInfo = document.getElementById('summaryInfo');
+            
+            try {
+                const response = await fetch('/api/debug/threads');
+                const result = await response.json();
+                
+                if (!result.success) {
+                    throw new Error(result.error || '获取线程信息失败');
+                }
+                
+                const data = result.data;
+                updateSummary(data);
+                updateThreadsList(data.threads);
+                
+                summaryInfo.style.display = 'block';
+                
+            } catch (error) {
+                console.error('获取线程信息失败:', error);
+                container.innerHTML = `
+                    <div class="error">
+                        <strong>错误:</strong> ${error.message}
+                    </div>
+                `;
+            }
+        }
+
+        function updateSummary(data) {
+            document.getElementById('totalThreads').textContent = data.total_threads;
+            document.getElementById('mainThreadId').textContent = data.main_thread_id;
+            document.getElementById('currentThreadId').textContent = data.current_thread_id;
+            document.getElementById('lastUpdated').textContent = new Date(data.timestamp).toLocaleString();
+        }
+
+        function updateThreadsList(threads) {
+            const container = document.getElementById('threadsContainer');
+            
+            if (!threads || Object.keys(threads).length === 0) {
+                container.innerHTML = '<div class="loading"><p>没有找到线程信息</p></div>';
+                return;
+            }
+            
+            let html = '';
+            
+            for (const [threadId, thread] of Object.entries(threads)) {
+                const badges = [];
+                if (thread.thread_name === 'MainThread') {
+                    badges.push('<span class="thread-badge badge-main">主线程</span>');
+                }
+                if (thread.thread_id == document.getElementById('currentThreadId').textContent) {
+                    badges.push('<span class="thread-badge badge-current">当前线程</span>');
+                }
+                if (thread.is_daemon) {
+                    badges.push('<span class="thread-badge badge-daemon">守护线程</span>');
+                }
+                
+                html += `
+                    <div class="thread-card">
+                        <div class="thread-header" onclick="toggleThread('${threadId}')">
+                            <h3 class="thread-title">
+                                ${thread.thread_name} (ID: ${thread.thread_id})
+                                ${badges.join('')}
+                            </h3>
+                            <p class="thread-details">
+                                状态: ${thread.is_alive ? '活跃' : '已停止'} | 
+                                栈帧数: ${thread.stack_trace.length}
+                            </p>
+                        </div>
+                        <div class="thread-content" id="thread-${threadId}">
+                            <div class="stack-trace">${thread.stack_summary}</div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            container.innerHTML = html;
+        }
+
+        function toggleThread(threadId) {
+            const content = document.getElementById(`thread-${threadId}`);
+            content.classList.toggle('expanded');
+        }
+
+        function toggleAutoRefresh() {
+            const checkbox = document.getElementById('autoRefresh');
+            
+            if (checkbox.checked) {
+                autoRefreshInterval = setInterval(refreshThreads, 5000);
+            } else {
+                if (autoRefreshInterval) {
+                    clearInterval(autoRefreshInterval);
+                    autoRefreshInterval = null;
+                }
+            }
+        }
+
+        async function downloadThreadStacks() {
+            try {
+                const response = await fetch('/api/debug/threads/download');
+                if (!response.ok) {
+                    throw new Error('下载失败');
+                }
+                
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `thread_stacks_${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+            } catch (error) {
+                console.error('下载线程栈失败:', error);
+                alert('下载失败: ' + error.message);
+            }
+        }
+
+        // 页面加载时初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            refreshThreads();
+        });
+
+        // 页面卸载时清理定时器
+        window.addEventListener('beforeunload', function() {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+            }
+        });
+    </script>
+</body>
+</html>

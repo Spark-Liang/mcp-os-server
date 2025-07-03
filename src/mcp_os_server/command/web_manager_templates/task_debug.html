@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Command Server - 事件循环任务调试</title>
+    <style>
+        /* === 基础样式 === */
+        :root {
+            --primary-color: #007bff;
+            --success-color: #28a745;
+            --danger-color: #dc3545;
+            --warning-color: #fd7e14;
+            --secondary-color: #6c757d;
+            --light-bg: #f8f9fa;
+            --border-color: #e0e0e0;
+            --hover-bg: #e3f2fd;
+            --text-primary: #333;
+            --text-secondary: #7f8c8d;
+            --shadow: 0 2px 20px rgba(0, 0, 0, 0.1);
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: var(--text-primary);
+        }
+
+        /* === 布局容器 === */
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+        }
+
+        /* === 头部样式 === */
+        .header {
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+
+        .header .subtitle {
+            color: var(--text-secondary);
+            margin-bottom: 0;
+        }
+
+        /* === 按钮样式 === */
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            text-decoration: none;
+            display: inline-block;
+            transition: all 0.2s;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+
+        .btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .btn-primary { background-color: var(--primary-color); color: white; }
+        .btn-primary:hover { background-color: #0056b3; }
+
+        .btn-success { background-color: var(--success-color); color: white; }
+        .btn-success:hover { background-color: #218838; }
+
+        .btn-secondary { background-color: var(--secondary-color); color: white; }
+        .btn-secondary:hover { background-color: #545b62; }
+
+        /* === 信息卡片样式 === */
+        .info-card {
+            background-color: var(--light-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        .info-item {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .info-label {
+            font-weight: bold;
+            color: var(--text-secondary);
+            font-size: 12px;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+
+        .info-value {
+            font-size: 16px;
+            color: var(--text-primary);
+        }
+
+        /* === 任务表格样式 === */
+        .table-container {
+            overflow-x: auto;
+            margin-top: 20px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background-color: #fff;
+            min-width: 1000px;
+        }
+
+        th, td {
+            padding: 12px 8px;
+            border: 1px solid var(--border-color);
+            text-align: left;
+            font-size: 14px;
+        }
+
+        th {
+            background-color: var(--light-bg);
+            font-weight: 600;
+            color: #495057;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        tbody tr:nth-child(even) {
+            background-color: var(--light-bg);
+        }
+
+        tbody tr:hover {
+            background-color: var(--hover-bg);
+        }
+
+        /* === 状态样式 === */
+        .status {
+            font-weight: bold;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+
+        .status-running { color: var(--success-color); background-color: rgba(40, 167, 69, 0.1); }
+        .status-done { color: var(--primary-color); background-color: rgba(0, 123, 255, 0.1); }
+        .status-cancelled, .status-exception { color: var(--danger-color); background-color: rgba(220, 53, 69, 0.1); }
+
+        /* === 错误样式 === */
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+            padding: 12px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            border-left: 4px solid var(--danger-color);
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--secondary-color);
+        }
+
+        /* === 代码块样式 === */
+        .code-block {
+            background-color: #f4f4f4;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        /* === 响应式设计 === */
+        @media (max-width: 768px) {
+            .container {
+                padding: 15px;
+            }
+
+            .info-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .btn {
+                display: block;
+                text-align: center;
+                margin-bottom: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 页面头部 -->
+        <header class="header">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <h1 style="margin: 0;">MCP Command Server - 事件循环任务调试</h1>
+                <div class="nav-links" style="display: flex; gap: 10px;">
+                    <a href="/" class="btn btn-secondary" style="text-decoration: none;">← 返回进程列表</a>
+                    <a href="/debug/threads" class="btn btn-primary" style="text-decoration: none;">🧵 线程调试</a>
+                </div>
+            </div>
+            <p class="subtitle">当前事件循环中所有任务的状态监控</p>
+        </header>
+
+        <!-- 操作按钮 -->
+        <div style="margin-bottom: 20px;">
+            <button type="button" class="btn btn-success" id="refreshBtn">🔄 刷新任务</button>
+            <a href="/api/debug/tasks/download" class="btn btn-primary" style="text-decoration: none;">📥 下载任务信息</a>
+        </div>
+
+        <!-- 错误消息区域 -->
+        <div id="errorMessage" class="error" style="display: none;"></div>
+
+        <!-- 事件循环信息卡片 -->
+        <div class="info-card">
+            <h3 style="margin-top: 0;">事件循环信息</h3>
+            <div class="info-grid" id="loopInfoGrid">
+                <div class="loading">正在加载事件循环信息...</div>
+            </div>
+        </div>
+
+        <!-- 任务表格 -->
+        <section class="table-container">
+            <table id="taskTable">
+                <thead>
+                    <tr>
+                        <th style="width: 80px;">任务ID</th>
+                        <th style="width: 150px;">任务名称</th>
+                        <th style="width: 80px;">状态</th>
+                        <th style="width: 200px;">协程</th>
+                        <th style="width: 200px;">位置</th>
+                        <th style="width: 150px;">异常</th>
+                        <th style="min-width: 300px;">堆栈跟踪</th>
+                    </tr>
+                </thead>
+                <tbody id="taskTableBody">
+                    <tr>
+                        <td colspan="7" class="loading">正在加载任务列表...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+    </div>
+
+    <!-- JavaScript 代码 -->
+    <script>
+        /**
+         * 任务调试管理器
+         */
+        class TaskDebugManager {
+            constructor() {
+                this.refreshInterval = null;
+                this.autoRefreshEnabled = true;
+                this.autoRefreshDelay = 5000; // 5秒自动刷新
+                
+                this.initializeElements();
+                this.bindEvents();
+                this.loadTasks();
+                this.startAutoRefresh();
+            }
+
+            /**
+             * 初始化DOM元素引用
+             */
+            initializeElements() {
+                this.elements = {
+                    refreshBtn: document.getElementById('refreshBtn'),
+                    errorMessage: document.getElementById('errorMessage'),
+                    loopInfoGrid: document.getElementById('loopInfoGrid'),
+                    taskTableBody: document.getElementById('taskTableBody')
+                };
+            }
+
+            /**
+             * 绑定事件处理器
+             */
+            bindEvents() {
+                this.elements.refreshBtn.addEventListener('click', () => this.loadTasks());
+                
+                // 页面获得焦点时刷新
+                window.addEventListener('focus', () => this.loadTasks());
+            }
+
+            /**
+             * 启动自动刷新
+             */
+            startAutoRefresh() {
+                if (this.refreshInterval) {
+                    clearInterval(this.refreshInterval);
+                }
+                
+                if (this.autoRefreshEnabled) {
+                    this.refreshInterval = setInterval(() => {
+                        this.loadTasks(true); // 静默刷新
+                    }, this.autoRefreshDelay);
+                }
+            }
+
+            /**
+             * 停止自动刷新
+             */
+            stopAutoRefresh() {
+                if (this.refreshInterval) {
+                    clearInterval(this.refreshInterval);
+                    this.refreshInterval = null;
+                }
+            }
+
+            /**
+             * 显示错误消息
+             */
+            showError(message) {
+                this.elements.errorMessage.textContent = message;
+                this.elements.errorMessage.style.display = 'block';
+            }
+
+            /**
+             * 隐藏错误消息
+             */
+            hideError() {
+                this.elements.errorMessage.style.display = 'none';
+            }
+
+            /**
+             * 加载任务数据
+             */
+            async loadTasks(silent = false) {
+                if (!silent) {
+                    this.hideError();
+                }
+
+                try {
+                    const response = await fetch('/api/debug/tasks');
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+
+                    const result = await response.json();
+                    
+                    if (!result.success) {
+                        throw new Error(result.error || '获取任务数据失败');
+                    }
+
+                    this.updateLoopInfo(result.data);
+                    this.updateTaskTable(result.data);
+
+                } catch (error) {
+                    console.error('Error loading tasks:', error);
+                    if (!silent) {
+                        this.showError(`加载任务失败: ${error.message}`);
+                    }
+                    
+                    // 清空表格
+                    this.elements.taskTableBody.innerHTML = 
+                        '<tr><td colspan="7" class="error">加载失败，请稍后重试</td></tr>';
+                }
+            }
+
+            /**
+             * 更新事件循环信息
+             */
+            updateLoopInfo(data) {
+                const infoItems = [
+                    { label: '时间戳', value: new Date(data.timestamp).toLocaleString() },
+                    { label: '事件循环状态', value: data.event_loop_running ? '运行中' : '未运行' },
+                    { label: '总任务数', value: data.total_tasks || 0 },
+                    { label: '循环ID', value: data.loop_id || 'N/A' },
+                    { label: '循环运行状态', value: data.loop_running ? '运行中' : '已停止' },
+                    { label: '循环关闭状态', value: data.loop_closed ? '已关闭' : '开放中' }
+                ];
+
+                if (data.error) {
+                    infoItems.push({ label: '错误', value: data.error });
+                }
+
+                this.elements.loopInfoGrid.innerHTML = infoItems.map(item => `
+                    <div class="info-item">
+                        <div class="info-label">${item.label}</div>
+                        <div class="info-value">${item.value}</div>
+                    </div>
+                `).join('');
+            }
+
+            /**
+             * 更新任务表格
+             */
+            updateTaskTable(data) {
+                const tasks = data.tasks || {};
+                
+                if (Object.keys(tasks).length === 0) {
+                    this.elements.taskTableBody.innerHTML = 
+                        '<tr><td colspan="7" class="text-center">没有找到任务</td></tr>';
+                    return;
+                }
+
+                const rows = Object.values(tasks).map(task => {
+                    const stackTrace = task.stack_summary || 'No stack trace';
+                    const truncatedStack = stackTrace.length > 200 ? 
+                        stackTrace.substring(0, 200) + '...' : stackTrace;
+
+                    return `
+                        <tr>
+                            <td>${this.escapeHtml(task.task_id || 'Unknown')}</td>
+                            <td>${this.escapeHtml(task.task_name || 'Unknown')}</td>
+                            <td><span class="status status-${task.state || 'unknown'}">${task.state || 'Unknown'}</span></td>
+                            <td>${this.escapeHtml(task.coro_name || 'Unknown')}</td>
+                            <td>${this.escapeHtml((task.coro_filename || 'Unknown') + ':' + (task.coro_lineno || 'Unknown'))}</td>
+                            <td>${task.exception ? this.escapeHtml(task.exception_type + ': ' + task.exception) : 'None'}</td>
+                            <td>
+                                <div class="code-block" title="${this.escapeHtml(stackTrace)}">
+                                    ${this.escapeHtml(truncatedStack)}
+                                </div>
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+
+                this.elements.taskTableBody.innerHTML = rows;
+            }
+
+            /**
+             * HTML转义
+             */
+            escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+        }
+
+        // 页面加载完成后初始化管理器
+        document.addEventListener('DOMContentLoaded', function() {
+            new TaskDebugManager();
+        });
+    </script>
+</body>
+</html> 

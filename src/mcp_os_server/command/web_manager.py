@@ -7,14 +7,16 @@ It implements the IWebManager interface and provides both web UI and REST API en
 
 import asyncio
 import logging
+import sys
 import threading
+import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -83,6 +85,8 @@ class WebManager:
         # Web UI routes
         self._app.get("/", response_class=HTMLResponse)(self._index)
         self._app.get("/process/{process_id}", response_class=HTMLResponse)(self._process_detail)
+        self._app.get("/debug/threads", response_class=HTMLResponse)(self._debug_threads)
+        self._app.get("/debug/tasks", response_class=HTMLResponse)(self._debug_tasks)
         
         # API routes
         self._app.get("/api/processes")(self._api_get_processes)
@@ -90,6 +94,10 @@ class WebManager:
         self._app.get("/api/processes/{process_id}/output")(self._api_get_process_output)
         self._app.post("/api/processes/{process_id}/stop")(self._api_stop_process)
         self._app.post("/api/processes/{process_id}/clean")(self._api_clean_process)
+        self._app.get("/api/debug/threads")(self._api_get_thread_stacks)
+        self._app.get("/api/debug/threads/download")(self._api_download_thread_stacks)
+        self._app.get("/api/debug/tasks")(self._api_get_event_loop_tasks)
+        self._app.get("/api/debug/tasks/download")(self._api_download_event_loop_tasks)
 
     async def _execute_in_main_loop(self, coro):
         """
@@ -199,6 +207,18 @@ class WebManager:
         return self._templates.TemplateResponse(
             request, "process_detail.html", {"pid": process_id}
         )
+
+    async def _debug_threads(self, request: Request):
+        """Render the thread stack debug page."""
+        if not self._templates:
+            raise HTTPException(status_code=500, detail="Templates not initialized")
+        return self._templates.TemplateResponse(request, "thread_debug.html")
+
+    async def _debug_tasks(self, request: Request):
+        """Render the event loop tasks debug page."""
+        if not self._templates:
+            raise HTTPException(status_code=500, detail="Templates not initialized")
+        return self._templates.TemplateResponse(request, "task_debug.html")
 
     # API route handlers
     async def _api_get_processes(self,
@@ -327,6 +347,76 @@ class WebManager:
             raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:
             self._logger.error(f"Error cleaning process: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    async def _api_get_thread_stacks(self):
+        """API endpoint to get current thread stack traces."""
+        try:
+            thread_data = self._get_current_thread_stacks()
+            return {
+                'success': True,
+                'data': thread_data
+            }
+        except Exception as e:
+            self._logger.error(f"Error getting thread stacks: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    async def _api_download_thread_stacks(self):
+        """API endpoint to download thread stack traces as a text file."""
+        try:
+            thread_data = self._get_current_thread_stacks()
+            
+            # Generate text content
+            text_content = self._generate_thread_stacks_text(thread_data)
+            
+            # Create filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"thread_stacks_{timestamp}.txt"
+            
+            # Return file response
+            return Response(
+                content=text_content,
+                media_type="text/plain",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+            
+        except Exception as e:
+            self._logger.error(f"Error downloading thread stacks: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    async def _api_get_event_loop_tasks(self):
+        """API endpoint to get current event loop tasks."""
+        try:
+            task_data = self._get_current_event_loop_tasks()
+            return {
+                'success': True,
+                'data': task_data
+            }
+        except Exception as e:
+            self._logger.error(f"Error getting event loop tasks: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    async def _api_download_event_loop_tasks(self):
+        """API endpoint to download event loop tasks as a text file."""
+        try:
+            task_data = self._get_current_event_loop_tasks()
+            
+            # Generate text content
+            text_content = self._generate_event_loop_tasks_text(task_data)
+            
+            # Create filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"event_loop_tasks_{timestamp}.txt"
+            
+            # Return file response
+            return Response(
+                content=text_content,
+                media_type="text/plain",
+                headers={"Content-Disposition": f"attachment; filename={filename}"}
+            )
+            
+        except Exception as e:
+            self._logger.error(f"Error downloading event loop tasks: {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
     # IWebManager interface implementation
@@ -576,3 +666,236 @@ class WebManager:
             'labels': process_info.labels or [],
             'duration': duration
         } 
+
+    def _get_current_thread_stacks(self) -> Dict[str, Any]:
+        """
+        Get thread stack traces for the current Python process.
+        
+        Returns:
+            Dict containing thread information and stack traces.
+        """
+        thread_info = {}
+        current_frames = sys._current_frames()
+        
+        for thread_id, frame in current_frames.items():
+            # Get thread object from thread_id
+            thread_obj = None
+            for thread in threading.enumerate():
+                if thread.ident == thread_id:
+                    thread_obj = thread
+                    break
+            
+            thread_name = thread_obj.name if thread_obj else f"Thread-{thread_id}"
+            is_daemon = thread_obj.daemon if thread_obj else False
+            is_alive = thread_obj.is_alive() if thread_obj else True
+            
+            # Extract stack trace
+            stack_trace = traceback.format_stack(frame)
+            
+            thread_info[str(thread_id)] = {
+                'thread_id': thread_id,
+                'thread_name': thread_name,
+                'is_daemon': is_daemon,
+                'is_alive': is_alive,
+                'stack_trace': stack_trace,
+                'stack_summary': ''.join(stack_trace)
+            }
+        
+        return {
+            'timestamp': datetime.now().isoformat(),
+            'total_threads': len(thread_info),
+            'main_thread_id': threading.main_thread().ident,
+            'current_thread_id': threading.current_thread().ident,
+            'threads': thread_info
+        }
+
+    def _generate_thread_stacks_text(self, thread_data: Dict[str, Any]) -> str:
+        """Generate thread stack traces as a text file."""
+        lines = []
+        
+        # Add header information
+        lines.append("=" * 80)
+        lines.append("PYTHON THREAD STACK TRACES")
+        lines.append("=" * 80)
+        lines.append(f"Timestamp: {thread_data.get('timestamp', 'Unknown')}")
+        lines.append(f"Total Threads: {thread_data.get('total_threads', 0)}")
+        lines.append(f"Main Thread ID: {thread_data.get('main_thread_id', 'Unknown')}")
+        lines.append(f"Current Thread ID: {thread_data.get('current_thread_id', 'Unknown')}")
+        lines.append("=" * 80)
+        lines.append("")
+        
+        # Add thread information
+        threads = thread_data.get('threads', {})
+        for thread_id, info in threads.items():
+            lines.append(f"Thread ID: {thread_id}")
+            lines.append(f"Thread Name: {info.get('thread_name', 'Unknown')}")
+            lines.append(f"Is Daemon: {info.get('is_daemon', False)}")
+            lines.append(f"Is Alive: {info.get('is_alive', True)}")
+            lines.append("-" * 60)
+            lines.append("Stack Trace:")
+            
+            # Add stack trace lines
+            stack_trace = info.get('stack_trace', [])
+            if isinstance(stack_trace, list):
+                for line in stack_trace:
+                    lines.append(line.rstrip())
+            else:
+                lines.append(str(stack_trace))
+            
+            lines.append("")
+            lines.append("=" * 80)
+            lines.append("")
+        
+        return "\n".join(lines)
+
+    def _get_current_event_loop_tasks(self) -> Dict[str, Any]:
+        """
+        Get current event loop tasks for debugging.
+        
+        Returns:
+            Dict containing task information and details.
+        """
+        # Use the main loop if available, otherwise try to get current loop
+        loop = self._main_loop
+        if not loop:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # No event loop running
+                return {
+                    'timestamp': datetime.now().isoformat(),
+                    'event_loop_running': False,
+                    'total_tasks': 0,
+                    'tasks': {},
+                    'error': 'No event loop running'
+                }
+        
+        # Get all tasks for the current event loop
+        all_tasks = asyncio.all_tasks(loop)
+        task_info = {}
+        
+        for i, task in enumerate(all_tasks):
+            task_id = f"task_{i}"
+            
+            # Get task name (if available)
+            task_name = getattr(task, '_name', None) or getattr(task, 'get_name', lambda: 'Unknown')()
+            
+            # Get task state
+            if task.done():
+                if task.cancelled():
+                    state = 'cancelled'
+                elif task.exception():
+                    state = 'exception'
+                else:
+                    state = 'done'
+            else:
+                state = 'running'
+            
+            # Get coroutine information
+            coro = getattr(task, '_coro', None)
+            coro_name = None
+            coro_filename = None
+            coro_lineno = None
+            
+            if coro:
+                coro_name = getattr(coro, '__name__', str(coro))
+                coro_frame = getattr(coro, 'cr_frame', None) or getattr(coro, 'gi_frame', None)
+                if coro_frame:
+                    coro_filename = coro_frame.f_code.co_filename
+                    coro_lineno = coro_frame.f_lineno
+            
+            # Get stack trace if running
+            stack_trace = []
+            if not task.done():
+                try:
+                    stack_trace = traceback.format_stack(task.get_stack()[0]) if task.get_stack() else []
+                except:
+                    stack_trace = ['Stack trace unavailable']
+            
+            task_info[task_id] = {
+                'task_id': task_id,
+                'task_name': task_name,
+                'state': state,
+                'done': task.done(),
+                'cancelled': task.cancelled() if task.done() else False,
+                'coro_name': coro_name,
+                'coro_filename': coro_filename,
+                'coro_lineno': coro_lineno,
+                'stack_trace': stack_trace,
+                'stack_summary': ''.join(stack_trace) if stack_trace else ''
+            }
+            
+            # Add exception info if available
+            if task.done() and not task.cancelled():
+                try:
+                    exception = task.exception()
+                    if exception:
+                        task_info[task_id]['exception'] = str(exception)
+                        task_info[task_id]['exception_type'] = type(exception).__name__
+                except:
+                    pass
+        
+        return {
+            'timestamp': datetime.now().isoformat(),
+            'event_loop_running': True,
+            'total_tasks': len(all_tasks),
+            'loop_id': id(loop),
+            'loop_running': loop.is_running(),
+            'loop_closed': loop.is_closed(),
+            'tasks': task_info
+        }
+
+    def _generate_event_loop_tasks_text(self, task_data: Dict[str, Any]) -> str:
+        """Generate event loop tasks as a text file."""
+        lines = []
+        
+        # Add header information
+        lines.append("=" * 80)
+        lines.append("PYTHON EVENT LOOP TASKS")
+        lines.append("=" * 80)
+        lines.append(f"Timestamp: {task_data.get('timestamp', 'Unknown')}")
+        lines.append(f"Event Loop Running: {task_data.get('event_loop_running', False)}")
+        lines.append(f"Total Tasks: {task_data.get('total_tasks', 0)}")
+        lines.append(f"Loop ID: {task_data.get('loop_id', 'Unknown')}")
+        lines.append(f"Loop Running: {task_data.get('loop_running', 'Unknown')}")
+        lines.append(f"Loop Closed: {task_data.get('loop_closed', 'Unknown')}")
+        lines.append("=" * 80)
+        lines.append("")
+        
+        # Add task information
+        tasks = task_data.get('tasks', {})
+        if not tasks:
+            lines.append("No tasks found or event loop not running.")
+            return "\n".join(lines)
+        
+        for task_id, info in tasks.items():
+            lines.append(f"Task ID: {task_id}")
+            lines.append(f"Task Name: {info.get('task_name', 'Unknown')}")
+            lines.append(f"State: {info.get('state', 'Unknown')}")
+            lines.append(f"Done: {info.get('done', False)}")
+            lines.append(f"Cancelled: {info.get('cancelled', False)}")
+            lines.append(f"Coroutine: {info.get('coro_name', 'Unknown')}")
+            
+            coro_file = info.get('coro_filename', 'Unknown')
+            coro_line = info.get('coro_lineno', 'Unknown')
+            lines.append(f"Location: {coro_file}:{coro_line}")
+            
+            if info.get('exception'):
+                lines.append(f"Exception: {info.get('exception_type', 'Unknown')} - {info.get('exception', '')}")
+            
+            lines.append("-" * 60)
+            lines.append("Stack Trace:")
+            
+            # Add stack trace lines
+            stack_trace = info.get('stack_trace', [])
+            if isinstance(stack_trace, list) and stack_trace:
+                for line in stack_trace:
+                    lines.append(line.rstrip())
+            else:
+                lines.append("No stack trace available")
+            
+            lines.append("")
+            lines.append("=" * 80)
+            lines.append("")
+        
+        return "\n".join(lines)
