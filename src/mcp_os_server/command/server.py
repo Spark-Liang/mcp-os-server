@@ -90,7 +90,7 @@ def define_mcp_server(
     async def command_execute(
         command: str = Field(description="The command to execute. Only allowed commands are: " + ", ".join(allowed_commands)),
         args: Optional[List[str]] = Field(None, description="The arguments for the command."),
-        directory: str = Field(description="The working directory for the command."),
+        directory: str = Field(description="The working directory (absolute path) for the command."),
         stdin: Optional[str] = Field(None, description="Input to pass to the command via stdin."),
         timeout: float = Field(15, description="Maximum execution time in seconds."),
         envs: Optional[Dict[str, str]] = Field(None, description="Additional environment variables for the command."),
@@ -147,7 +147,7 @@ def define_mcp_server(
     async def command_bg_start(
         command: str = Field(description="The command to execute. Only allowed commands are: " + ", ".join(allowed_commands)),
         args: Optional[List[str]] = Field(None, description="The arguments for the command."),
-        directory: str = Field(description="The working directory for the command."),
+        directory: str = Field(description="The working directory (absolute path) for the command."),
         description: str = Field(description="A description for the command."),
         labels: Optional[List[str]] = Field(None, description="Labels to categorize the command."),
         stdin: Optional[str] = Field(None, description="Input to pass to the command via stdin."),

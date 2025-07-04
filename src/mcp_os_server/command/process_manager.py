@@ -368,6 +368,10 @@ class ProcessManager(IProcessManager):
             # 使用主事件循环创建子进程，如果主循环不可用则使用默认方法
             async def _create_subprocess():
                 """带名称的子进程创建函数"""
+                logger.info("Creating subprocess: %s", command_to_execute)
+                logger.info("cwd: %s", directory)
+                logger.info("stdin_mode: %s", stdin_mode)
+                logger.info("process_envs: %s", process_envs)
                 return await asyncio.create_subprocess_exec(
                     *command_to_execute,
                     cwd=directory,
