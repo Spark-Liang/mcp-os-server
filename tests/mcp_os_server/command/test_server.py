@@ -214,7 +214,8 @@ def mcp_server(command_executor: CommandExecutor) -> FastMCP:
         mcp, 
         command_executor,
         allowed_commands=[sys.executable, "python", "echo", "sleep", "exit", "grep", "nonexistent-command-12345"],  # Include all commands needed for tests
-        default_encoding="utf-8"
+        default_encoding="utf-8",
+        command_default_encoding_map={}
     )
     return mcp
 
@@ -1039,7 +1040,8 @@ class TestMCPServerConfigurationParameters:
             mcp, 
             command_executor,
             allowed_commands=[sys.executable],  # Only allow the actual python executable
-            default_encoding="utf-8"
+            default_encoding="utf-8",
+            command_default_encoding_map={}
         )
         return mcp
 
@@ -1055,7 +1057,8 @@ class TestMCPServerConfigurationParameters:
             mcp, 
             command_executor,
             allowed_commands=[sys.executable, "echo", "sleep"],
-            default_encoding="gbk"  # Different default encoding
+            default_encoding="gbk",  # Different default encoding
+            command_default_encoding_map={}
         )
         return mcp
 

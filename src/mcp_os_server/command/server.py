@@ -62,6 +62,7 @@ def define_mcp_server(
         *,
         allowed_commands: List[str],
         default_encoding: str,
+        command_default_encoding_map: Dict[str, str],
         # TODO: add other options if needed
     ) -> None:
     """
@@ -74,7 +75,16 @@ def define_mcp_server(
         default_encoding: The default encoding for the command output.
     """
 
-    logger.info(f"Allowed commands: {allowed_commands}")
+    logger.info("Allowed commands: %s", allowed_commands)
+    
+    def get_effective_encoding(command: str, user_encoding: Optional[str] = None) -> str:
+        """Get the effective encoding for a command based on priority."""
+        # Priority: user_encoding > command_default_encoding_map > default_encoding
+        if user_encoding:
+            return user_encoding
+        if command in command_default_encoding_map:
+            return command_default_encoding_map[command]
+        return default_encoding
 
     @mcp.tool()
     async def command_execute(
@@ -100,13 +110,14 @@ def define_mcp_server(
         limit_lines_int = max(1, int(limit_lines)) if limit_lines else 500
         
         try:
+            effective_encoding = get_effective_encoding(command, encoding if encoding != default_encoding else None)
             result = await command_executor.execute_command(
                 command=[command] + (args or []),
                 directory=directory,
                 stdin_data=stdin.encode() if stdin else None,
                 timeout=timeout_int,
                 envs=envs,
-                encoding=encoding or default_encoding,
+                encoding=effective_encoding,
                 limit_lines=limit_lines_int,
             )
 
@@ -155,6 +166,7 @@ def define_mcp_server(
         timeout_int = max(1, int(timeout)) if timeout else 15
         
         try:
+            effective_encoding = get_effective_encoding(command, encoding if encoding != default_encoding else None)
             process = await command_executor.start_background_command(
                 command=[command] + (args or []),
                 directory=directory,
@@ -162,7 +174,7 @@ def define_mcp_server(
                 stdin_data=stdin.encode() if stdin else None,
                 timeout=timeout_int,
                 envs=envs,
-                encoding=encoding or default_encoding,
+                encoding=effective_encoding,
                 labels=labels,
             )
             return [TextContent(type="text", text=f"Process started with PID: {process.pid}")]

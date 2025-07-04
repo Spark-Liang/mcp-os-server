@@ -14,7 +14,7 @@ import sys
 import tempfile
 import webbrowser
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 import socket
 
 import click
@@ -80,6 +80,20 @@ def parse_allowed_directories(allowed_dirs_str: str) -> List[str]:
     dirs = [dir_path.strip() for dir_path in allowed_dirs_str.split(",")]
     # Filter out empty strings
     return [dir_path for dir_path in dirs if dir_path]
+
+
+def parse_command_default_encoding_map() -> Dict[str, str]:
+    """Parse command-specific encoding from DEFAULT_ENCODING_<command> environment variables."""
+    command_encoding_map = {}
+    prefix = "DEFAULT_ENCODING_"
+    
+    for env_key, env_value in os.environ.items():
+        if env_key.startswith(prefix):
+            command_name = env_key[len(prefix):]
+            if command_name and env_value.strip():
+                command_encoding_map[command_name] = env_value.strip()
+    
+    return command_encoding_map
 
 
 
@@ -149,14 +163,14 @@ async def _run_filesystem_server(
         return
     
     # Only output initialization info in non-stdio modes
-    logger.info(f"Starting MCP Filesystem Server in {mode} mode...")
-    logger.info(f"Allowed directories: {', '.join(allowed_dirs)}")
+    logger.info("Starting MCP Filesystem Server in %s mode...", mode)
+    logger.info("Allowed directories: %s", ', '.join(allowed_dirs))
     
     # Create filesystem server
     try:
         mcp = create_filesystem_server(allowed_dirs, host=host, port=port)
     except Exception as e:
-        logger.error(f"Failed to initialize filesystem server: {e}")
+        logger.error("Failed to initialize filesystem server: %s", e, exc_info=True)
         return
     
     try:
@@ -165,21 +179,21 @@ async def _run_filesystem_server(
             await mcp.run_stdio_async()
         elif mode == "sse":
             # Run in SSE mode
-            logger.info(f"Starting SSE server on {host}:{port}")
-            logger.info(f"MCP web interface available at: http://{host}:{port}{web_path}")
+            logger.info("Starting SSE server on %s:%s", host, port)
+            logger.info("MCP web interface available at: http://%s:%s%s", host, port, web_path)
             await mcp.run_sse_async()
         elif mode == "http":
             # Run in HTTP mode
-            logger.info(f"Starting HTTP server on {host}:{port}")
-            logger.info(f"MCP API endpoint: http://{host}:{port}{path}")
-            logger.info(f"MCP web interface available at: http://{host}:{port}{web_path}")
+            logger.info("Starting HTTP server on %s:%s", host, port)
+            logger.info("MCP API endpoint: http://%s:%s%s", host, port, path)
+            logger.info("MCP web interface available at: http://%s:%s%s", host, port, web_path)
             await mcp.run_streamable_http_async()
     except KeyboardInterrupt:
         logger.info("Shutting down filesystem server...")
     except Exception as e:
         import traceback
-        logger.error(f"Filesystem server error: {e}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        logger.error("Filesystem server error: %s", e, exc_info=True)
+        logger.error("Traceback: %s", traceback.format_exc())
 
 
 async def _run_unified_server(
@@ -215,24 +229,27 @@ async def _run_unified_server(
     
     process_retention_seconds = int(os.getenv("PROCESS_RETENTION_SECONDS", "300"))
     default_encoding = os.getenv("DEFAULT_ENCODING", get_default_encoding())
+    command_default_encoding_map = parse_command_default_encoding_map()
     
     # OUTPUT_STORAGE_PATH logic: Use temp dir if not explicitly set
     output_storage_path = os.getenv("OUTPUT_STORAGE_PATH")
     if output_storage_path is None:
         temp_dir_obj = tempfile.TemporaryDirectory()
         output_storage_path = temp_dir_obj.name
-        logger.info(f"Using temporary output storage path: {output_storage_path}")
+        logger.info("Using temporary output storage path: %s", output_storage_path)
     else:
-        logger.info(f"Using provided output storage path: {output_storage_path}")
+        logger.info("Using provided output storage path: %s", output_storage_path)
 
     # Only output initialization info in non-stdio modes
-    logger.info(f"Starting MCP Unified Server in {mode} mode...")
+    logger.info("Starting MCP Unified Server in %s mode...", mode)
     if allowed_commands:
-        logger.info(f"Allowed commands: {', '.join(allowed_commands)}")
-        logger.info(f"Process retention: {process_retention_seconds} seconds")
-        logger.info(f"Default encoding: {default_encoding}")
+        logger.info("Allowed commands: %s", ', '.join(allowed_commands))
+        logger.info("Process retention: %s seconds", process_retention_seconds)
+        logger.info("Default encoding: %s", default_encoding)
+        if command_default_encoding_map:
+            logger.info("Command-specific encodings: %s", command_default_encoding_map)
     if allowed_dirs:
-        logger.info(f"Allowed directories: {', '.join(allowed_dirs)}")
+        logger.info("Allowed directories: %s", ', '.join(allowed_dirs))
     
     # Create CommandExecutor if commands are allowed
     command_executor = None
@@ -244,7 +261,7 @@ async def _run_unified_server(
                 default_encoding=default_encoding,
             )
         except Exception as e:
-            logger.error(f"Failed to initialize command executor: {e}")
+            logger.error("Failed to initialize command executor: %s", e, exc_info=True)
             return
     
     # Create and start WebManager if enabled
@@ -257,9 +274,9 @@ async def _run_unified_server(
                 port=web_port,
                 debug=web_debug
             )
-            logger.info(f"Web management interface available at: http://{web_host}:{web_port}")
+            logger.info("Web management interface available at: http://%s:%s", web_host, web_port)
         except Exception as e:
-            logger.error(f"Failed to start web manager: {e}")
+            logger.error("Failed to start web manager: %s", e, exc_info=True)
             # Continue without web manager
             enable_web_manager = False
     
@@ -274,6 +291,7 @@ async def _run_unified_server(
             command_executor=command_executor,
             allowed_commands=allowed_commands,
             default_encoding=default_encoding,
+            command_default_encoding_map=command_default_encoding_map,
         )
     
     # Define filesystem server tools if allowed
@@ -297,7 +315,7 @@ async def _run_unified_server(
                 return [TextContent(type="text", text=f"已在浏览器中打开 Web 管理界面: {web_url} 🚀")]
             except Exception as e:
                 return [TextContent(type="text", text=f"打开 Web 管理界面失败: {e} ❌")]
-        logger.info(f"MCP tool 'command_open_web_manager' available to open: http://{web_host}:{web_port}")
+        logger.info("MCP tool 'command_open_web_manager' available to open: http://%s:%s", web_host, web_port)
 
     try:
         if mode == "stdio":
@@ -305,31 +323,31 @@ async def _run_unified_server(
             # Minimize logging in stdio mode to avoid protocol interference
             if enable_web_manager:
                 # Only log web manager info to stderr as a critical notice
-                logger.error(f"Web management interface running at: http://{web_host}:{web_port}")
+                logger.error("Web management interface running at: http://%s:%s", web_host, web_port)
             await mcp.run_stdio_async()
         elif mode == "sse":
             # Run in SSE mode
-            logger.info(f"Starting SSE server on {host}:{port}")
-            logger.info(f"MCP web interface available at: http://{host}:{port}{web_path}")
+            logger.info("Starting SSE server on %s:%s", host, port)
+            logger.info("MCP web interface available at: http://%s:%s%s", host, port, web_path)
             if enable_web_manager:
-                logger.info(f"Process management interface available at: http://{web_host}:{web_port}")
+                logger.info("Process management interface available at: http://%s:%s", web_host, web_port)
             await mcp.run_sse_async()
         elif mode == "http":
             # Run in HTTP mode
-            logger.info(f"Starting HTTP server on {host}:{port}")
-            logger.info(f"MCP API endpoint: http://{host}:{port}{path}")
-            logger.info(f"MCP web interface available at: http://{host}:{port}{web_path}")
+            logger.info("Starting HTTP server on %s:%s", host, port)
+            logger.info("MCP API endpoint: http://%s:%s%s", host, port, path)
+            logger.info("MCP web interface available at: http://%s:%s%s", host, port, web_path)
             if enable_web_manager:
-                logger.info(f"Process management interface available at: http://{web_host}:{web_port}")
+                logger.info("Process management interface available at: http://%s:%s", web_host, web_port)
             await mcp.run_streamable_http_async()
     except KeyboardInterrupt:
         # Only log shutdown message in non-stdio modes
         logger.info("Shutting down unified server...")
     except Exception as e:
         import traceback
-        logger.error(f"Unified server error: {e}")
+        logger.error("Unified server error: %s", e, exc_info=True)
         # Only log full traceback in non-stdio modes
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        logger.error("Traceback: %s", traceback.format_exc())
     finally:
         # Cleanup
         try:
@@ -339,9 +357,9 @@ async def _run_unified_server(
                 await command_executor.shutdown()
             if temp_dir_obj:
                 temp_dir_obj.cleanup()
-                logger.info(f"Cleaned up temporary output storage path: {output_storage_path}")
+                logger.info("Cleaned up temporary output storage path: %s", output_storage_path)
         except Exception as e:
-            logger.error(f"Error during cleanup: {e}")
+            logger.error("Error during cleanup: %s", e, exc_info=True)
 
 
 def get_random_available_port() -> int:
@@ -455,21 +473,24 @@ async def _run_command_server(
     
     process_retention_seconds = int(os.getenv("PROCESS_RETENTION_SECONDS", "300"))
     default_encoding = os.getenv("DEFAULT_ENCODING", get_default_encoding())
+    command_default_encoding_map = parse_command_default_encoding_map()
     
     # OUTPUT_STORAGE_PATH logic: Use temp dir if not explicitly set
     output_storage_path = os.getenv("OUTPUT_STORAGE_PATH")
     if output_storage_path is None:
         temp_dir_obj = tempfile.TemporaryDirectory()
         output_storage_path = temp_dir_obj.name
-        logger.info(f"Using temporary output storage path: {output_storage_path}")
+        logger.info("Using temporary output storage path: %s", output_storage_path)
     else:
-        logger.info(f"Using provided output storage path: {output_storage_path}")
+        logger.info("Using provided output storage path: %s", output_storage_path)
 
     # Only output initialization info in non-stdio modes
-    logger.info(f"Starting MCP Command Server in {mode} mode...")
-    logger.info(f"Allowed commands: {', '.join(allowed_commands)}")
-    logger.info(f"Process retention: {process_retention_seconds} seconds")
-    logger.info(f"Default encoding: {default_encoding}")
+    logger.info("Starting MCP Command Server in %s mode...", mode)
+    logger.info("Allowed commands: %s", ', '.join(allowed_commands))
+    logger.info("Process retention: %s seconds", process_retention_seconds)
+    logger.info("Default encoding: %s", default_encoding)
+    if command_default_encoding_map:
+        logger.info("Command-specific encodings: %s", command_default_encoding_map)
     
     # Create CommandExecutor
     try:
@@ -479,7 +500,7 @@ async def _run_command_server(
             default_encoding=default_encoding,
         )
     except Exception as e:
-        logger.error(f"Failed to initialize command executor: {e}")
+        logger.error("Failed to initialize command executor: %s", e, exc_info=True)
         return
     
     # Create and start WebManager if enabled
@@ -492,9 +513,9 @@ async def _run_command_server(
                 port=web_port,
                 debug=web_debug
             )
-            logger.info(f"Web management interface available at: http://{web_host}:{web_port}")
+            logger.info("Web management interface available at: http://%s:%s", web_host, web_port)
         except Exception as e:
-            logger.error(f"Failed to start web manager: {e}")
+            logger.error("Failed to start web manager: %s", e, exc_info=True)
             # Continue without web manager
             enable_web_manager = False
     
@@ -508,6 +529,7 @@ async def _run_command_server(
         command_executor=command_executor,
         allowed_commands=allowed_commands,
         default_encoding=default_encoding,
+        command_default_encoding_map=command_default_encoding_map,
     )
     
     # Add command_open_web_manager tool if web manager is enabled
@@ -526,7 +548,7 @@ async def _run_command_server(
                 return [TextContent(type="text", text=f"已在浏览器中打开 Web 管理界面: {web_url} 🚀")]
             except Exception as e:
                 return [TextContent(type="text", text=f"打开 Web 管理界面失败: {e} ❌")]
-        logger.info(f"MCP tool 'command_open_web_manager' available to open: http://{web_host}:{web_port}")
+        logger.info("MCP tool 'command_open_web_manager' available to open: http://%s:%s", web_host, web_port)
 
     try:
         if mode == "stdio":
@@ -534,31 +556,31 @@ async def _run_command_server(
             # Minimize logging in stdio mode to avoid protocol interference
             if enable_web_manager:
                 # Only log web manager info to stderr as a critical notice
-                logger.error(f"Web management interface running at: http://{web_host}:{web_port}")
+                logger.error("Web management interface running at: http://%s:%s", web_host, web_port)
             await mcp.run_stdio_async()
         elif mode == "sse":
             # Run in SSE mode
-            logger.info(f"Starting SSE server on {host}:{port}")
-            logger.info(f"MCP web interface available at: http://{host}:{port}{web_path}")
+            logger.info("Starting SSE server on %s:%s", host, port)
+            logger.info("MCP web interface available at: http://%s:%s%s", host, port, web_path)
             if enable_web_manager:
-                logger.info(f"Process management interface available at: http://{web_host}:{web_port}")
+                logger.info("Process management interface available at: http://%s:%s", web_host, web_port)
             await mcp.run_sse_async()
         elif mode == "http":
             # Run in HTTP mode
-            logger.info(f"Starting HTTP server on {host}:{port}")
-            logger.info(f"MCP API endpoint: http://{host}:{port}{path}")
-            logger.info(f"MCP web interface available at: http://{host}:{port}{web_path}")
+            logger.info("Starting HTTP server on %s:%s", host, port)
+            logger.info("MCP API endpoint: http://%s:%s%s", host, port, path)
+            logger.info("MCP web interface available at: http://%s:%s%s", host, port, web_path)
             if enable_web_manager:
-                logger.info(f"Process management interface available at: http://{web_host}:{web_port}")
+                logger.info("Process management interface available at: http://%s:%s", web_host, web_port)
             await mcp.run_streamable_http_async()
     except KeyboardInterrupt:
         # Only log shutdown message in non-stdio modes
         logger.info("Shutting down server...")
     except Exception as e:
         import traceback
-        logger.error(f"Server error: {e}")
+        logger.error("Server error: %s", e, exc_info=True)
         # Only log full traceback in non-stdio modes
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        logger.error("Traceback: %s", traceback.format_exc())
     finally:
         # Cleanup
         try:
@@ -567,9 +589,9 @@ async def _run_command_server(
             await command_executor.shutdown()
             if temp_dir_obj:
                 temp_dir_obj.cleanup()
-                logger.info(f"Cleaned up temporary output storage path: {output_storage_path}")
+                logger.info("Cleaned up temporary output storage path: %s", output_storage_path)
         except Exception as e:
-            logger.error(f"Error during cleanup: {e}")
+            logger.error("Error during cleanup: %s", e, exc_info=True)
 
 
 @main.command("filesystem-server")

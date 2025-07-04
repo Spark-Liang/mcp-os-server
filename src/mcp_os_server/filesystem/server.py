@@ -1,5 +1,9 @@
 """MCP Filesystem Server using FastMCP"""
 
+from __future__ import annotations
+
+from ..filtered_fast_mcp import FilteredFastMCP
+
 import io
 import json
 import logging
@@ -52,9 +56,7 @@ def _do_load_image_by_pillow(path: str, max_bytes: Optional[int] = None) -> Imag
             )
 
         # 需要创建缩略图
-        logger.info(
-            f"图片大小 {current_size} 字节超过限制 {max_bytes} 字节，创建缩略图"
-        )
+        logger.info("图片大小 %s 字节超过限制 %s 字节，创建缩略图", current_size, max_bytes)
 
         # 计算缩放比例
         scale_ratio = (max_bytes / current_size) ** 0.5  # 开平方根获得线性缩放比例
@@ -83,7 +85,7 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
 
     def __load_image_by_pillow(path: str, max_bytes: Optional[int] = None) -> Image:
         """读取图片文件并转换为Image对象"""
-        logger.info(f"读取图片文件: {path}")
+        logger.info("读取图片文件: %s", path)
         is_allowed = filesystem_service.is_path_allowed(path)
         if not is_allowed:
             raise PermissionError(f"路径不在允许的目录中: {path}")
@@ -121,12 +123,12 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
     # ===== 工具 (Tools) =====
 
     @mcp.tool()
-    async def fs_read_file(path: str = Field(..., description="要读取的文件路径")) -> str:
+    async def fs_read_file(path: str = Field(..., description="要读取的文件的绝对路径")) -> str:
         """
         读取文件内容
 
         Args:
-            path: 要读取的文件路径
+            path: 要读取的文件的绝对路径
 
         Returns:
             文件的文本内容
@@ -135,13 +137,13 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
 
     @mcp.tool()
     async def fs_read_multiple_files(
-        paths: List[str] = Field(..., description="要读取的文件路径列表")
+        paths: List[str] = Field(..., description="要读取的文件的绝对路径列表")
     ) -> Dict[str, Any]:
         """
         读取多个文件的内容
 
         Args:
-            paths: 要读取的文件路径列表
+            paths: 要读取的文件的绝对路径列表
 
         Returns:
             包含每个文件读取结果的字典
@@ -152,7 +154,7 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
 
     @mcp.tool()
     async def fs_read_image(
-        path: str = Field(..., description="要读取的图片文件路径"),
+        path: str = Field(..., description="要读取的图片文件的绝对路径"),
         max_bytes: int = Field(
             default=default_max_bytes,
             description="最大字节数限制，超过此大小将创建缩略图",
@@ -163,7 +165,7 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
         读取图片文件并返回为Image内容
 
         Args:
-            path: 要读取的图片文件路径
+            path: 要读取的图片文件的绝对路径
             max_bytes: 最大字节数限制，如果超过此大小将创建缩略图
 
         Returns:
@@ -173,12 +175,12 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
         try:
             return __load_image_by_pillow(path, max_bytes)
         except BaseException as e:
-            logger.error(f"读取图片文件失败: {e}", exc_info=True)
+            logger.error("读取图片文件失败: %s", e, exc_info=True)
             raise e
 
     @mcp.tool()
     async def fs_read_multiple_images(
-        paths: List[str] = Field(..., description="要读取的图片文件路径列表"),
+        paths: List[str] = Field(..., description="要读取的图片文件的绝对路径列表"),
         max_bytes: int = Field(
             default=default_max_bytes,
             description="最大字节数限制，超过此大小将创建缩略图，默认10MB",
@@ -189,7 +191,7 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
         读取多个图片文件并返回为Image内容列表
 
         Args:
-            paths: 要读取的图片文件路径列表
+            paths: 要读取的图片文件的绝对路径列表
             max_bytes: 最大字节数限制，如果超过此大小将创建缩略图
 
         Returns:
@@ -200,20 +202,20 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
             try:
                 images.append(__load_image_by_pillow(path, max_bytes))
             except BaseException as e:
-                logger.error(f"读取图片文件失败: {e}", exc_info=True)
+                logger.error("读取图片文件失败: %s", e, exc_info=True)
                 raise e
         return images
 
     @mcp.tool()
     async def fs_write_file(
-        path: str = Field(..., description="要写入的文件路径"),
+        path: str = Field(..., description="要写入的文件的绝对路径"),
         content: str = Field(..., description="要写入的内容"),
     ) -> str:
         """
         写入文件内容
 
         Args:
-            path: 要写入的文件路径
+            path: 要写入的文件的绝对路径
             content: 要写入的内容
 
         Returns:
@@ -224,13 +226,13 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
 
     @mcp.tool()
     async def fs_create_directory(
-        path: str = Field(..., description="要创建的目录路径")
+        path: str = Field(..., description="要创建的目录的绝对路径")
     ) -> str:
         """
         创建目录
 
         Args:
-            path: 要创建的目录路径
+            path: 要创建的目录的绝对路径
 
         Returns:
             操作结果消息
@@ -240,13 +242,13 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
 
     @mcp.tool()
     async def fs_list_directory(
-        path: str = Field(..., description="要列出的目录路径")
+        path: str = Field(..., description="要列出的目录的绝对路径")
     ) -> List[Dict[str, Any]]:
         """
         列出目录内容
 
         Args:
-            path: 要列出的目录路径
+            path: 要列出的目录的绝对路径
 
         Returns:
             目录内容列表，包含文件和子目录信息
@@ -255,15 +257,15 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
 
     @mcp.tool()
     async def fs_move_file(
-        source: str = Field(..., description="源路径"),
-        destination: str = Field(..., description="目标路径"),
+        source: str = Field(..., description="源文件的绝对路径"),
+        destination: str = Field(..., description="目标文件的绝对路径"),
     ) -> str:
         """
         移动或重命名文件/目录
 
         Args:
-            source: 源路径
-            destination: 目标路径
+            source: 源文件的绝对路径
+            destination: 目标文件的绝对路径
 
         Returns:
             操作结果消息
@@ -273,7 +275,7 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
 
     @mcp.tool()
     async def fs_search_files(
-        path: str = Field(..., description="搜索起始路径"),
+        path: str = Field(..., description="搜索起始目录的绝对路径"),
         pattern: str = Field(
             ..., description="搜索模式（支持glob模式，如 *.txt, *.py）"
         ),
@@ -285,7 +287,7 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
         搜索文件
 
         Args:
-            path: 搜索起始路径
+            path: 搜索起始目录的绝对路径
             pattern: 搜索模式（支持glob模式，如 *.txt, *.py）
             exclude_patterns: 要排除的模式列表（可选）
 
@@ -296,13 +298,13 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
 
     @mcp.tool()
     async def fs_get_file_info(
-        path: str = Field(..., description="文件或目录路径")
+        path: str = Field(..., description="文件或目录的绝对路径")
     ) -> Dict[str, Any]:
         """
         获取文件或目录的详细信息
 
         Args:
-            path: 文件或目录路径
+            path: 文件或目录的绝对路径
 
         Returns:
             包含文件信息的字典（类型、大小、时间等）
@@ -311,7 +313,7 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
 
     @mcp.tool()
     async def fs_edit_file(
-        path: str = Field(..., description="要编辑的文件路径"),
+        path: str = Field(..., description="要编辑的文件的绝对路径"),
         edits: List[Dict[str, str]] = Field(
             ..., description="编辑操作列表，每个操作包含 oldText 和 newText"
         ),
@@ -321,7 +323,7 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
         编辑文件内容
 
         Args:
-            path: 要编辑的文件路径
+            path: 要编辑的文件的绝对路径
             edits: 编辑操作列表，每个操作包含 oldText 和 newText
             dry_run: 是否为预览模式（不实际修改文件）
 
@@ -345,7 +347,7 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
         作为资源读取文件内容
 
         Args:
-            path: 文件路径
+            path: 文件的绝对路径
 
         Returns:
             文件内容
@@ -358,7 +360,7 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
         作为资源列出目录内容
 
         Args:
-            path: 目录路径
+            path: 目录的绝对路径
 
         Returns:
             JSON格式的目录内容列表
@@ -379,9 +381,19 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
 
 
 def create_server(allowed_dirs: List[str], host: str = "127.0.0.1", port: int = 8000) -> "FilteredFastMCP":
-    """创建MCP服务器实例"""
-    # Import locally to avoid circular import
-    from ..filtered_fast_mcp import FilteredFastMCP
+    """
+    创建并配置MCP文件系统服务器。
+
+    Args:
+        allowed_dirs (List[str]): 允许文件操作的根目录列表。
+        host (str): 服务器绑定的主机地址。
+        port (int): 服务器监听的端口。
+
+    Returns:
+        FilteredFastMCP: 配置好的FastMCP服务器实例。
+    """
+    if not allowed_dirs:
+        raise ValueError("至少需要指定一个允许的目录")
 
     # 从环境变量读取额外的允许目录
     env_allowed_dirs_str = os.getenv("ALLOWED_DIRS")
@@ -390,12 +402,7 @@ def create_server(allowed_dirs: List[str], host: str = "127.0.0.1", port: int = 
         # 将环境变量中的目录添加到允许列表中
         allowed_dirs.extend(env_allowed_dirs)
 
-    # 初始化文件系统服务
     filesystem_service = FilesystemService(allowed_dirs)
-
-    # 创建FilteredFastMCP服务器
-    mcp = FilteredFastMCP("Filesystem Server", host=host, port=port)
-
+    mcp = FilteredFastMCP(name="filesystem", version="0.1.0", host=host, port=port)
     define_mcp_server(mcp, filesystem_service)
-
     return mcp

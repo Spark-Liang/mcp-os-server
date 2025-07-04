@@ -17,6 +17,7 @@
 *   **模块化进程管理接口**：核心进程管理能力设计为可复用模块，方便其他MCP服务器或应用集成使用。
 *   **后台进程管理**：支持在后台运行长时间运行的命令并进行管理。
 *   **Web管理界面**：通过Web UI监控和管理后台进程。
+*   **灵活的编码配置**：支持为每个命令单独设置字符编码，确保不同命令的输出能够正确解析。
 *   **多种服务器模式**：支持stdio（默认）、SSE和streamable HTTP模式。
 
 ### MCP Filesystem Server
@@ -61,6 +62,9 @@ ALLOWED_COMMANDS="ls,cat,echo" uv --project . run mcp-os-server command-server
 
 # 明确指定stdio模式
 ALLOWED_COMMANDS="ls,cat,echo" uv --project . run mcp-os-server command-server --mode stdio
+
+# 使用命令特定编码（为不同命令设置不同的字符编码）
+ALLOWED_COMMANDS="ls,cat,echo,npm,dir" DEFAULT_ENCODING_npm=utf-8 DEFAULT_ENCODING_dir=gbk uv --project . run mcp-os-server command-server
 ```
 
 #### SSE模式
@@ -149,6 +153,9 @@ ALLOWED_COMMANDS="ls,cat,echo" ALLOWED_DIRS="/tmp" uv --project . run mcp-os-ser
 
 # 明确指定stdio模式
 ALLOWED_COMMANDS="ls,cat,echo" ALLOWED_DIRS="/tmp" uv --project . run mcp-os-server unified-server --mode stdio
+
+# 使用命令特定编码
+ALLOWED_COMMANDS="ls,cat,echo,npm,dir" ALLOWED_DIRS="/tmp" DEFAULT_ENCODING_npm=utf-8 DEFAULT_ENCODING_dir=gbk uv --project . run mcp-os-server unified-server
 ```
 
 #### SSE模式
@@ -191,11 +198,50 @@ ALLOWED_COMMANDS="ls,cat,echo" ALLOWED_DIRS="/tmp" uv --project . run mcp-os-ser
 | `ALLOWED_DIRS`              | 允许访问的目录列表（操作系统路径分隔符分隔）                          | （空 - 不允许任何目录）  | Filesystem, Unified | `ALLOWED_DIRS="/var/www/html,/home/user/docs"` (Linux/macOS) <br> `ALLOWED_DIRS="C:\Users\User\Documents;D:\Projects"` (Windows) |
 | `PROCESS_RETENTION_SECONDS` | 清理前保留已完成进程的时间（秒）                                | `3600` (1小时)   | Command, Unified    | `PROCESS_RETENTION_SECONDS=86400`                                                                                                |
 | `DEFAULT_ENCODING`          | 进程输出的默认字符编码                                     | 系统终端编码或`utf-8` | Command, Unified    | `DEFAULT_ENCODING=gbk`                                                                                                           |
+| `DEFAULT_ENCODING_<command>` | 为特定命令设置默认字符编码（优先级高于 `DEFAULT_ENCODING`）         | （空）            | Command, Unified    | `DEFAULT_ENCODING_npm=utf-8 DEFAULT_ENCODING_dir=gbk`                                                                            |
 | `OUTPUT_STORAGE_PATH`       | 命令输出日志的存储路径                                     | 临时目录           | Command, Unified    | `OUTPUT_STORAGE_PATH=/var/log/mcp-os-server`                                                                                     |
 | `DISABLE_TOOLS`             | 逗号分隔的要禁用的工具列表                                   | （空）            | 所有服务器               | `DISABLE_TOOLS="read_file,command_execute"`                                                                                      |
 | `ENABLE_TOOLS_ONLY`         | 逗号分隔的只允许启用的工具列表（如果设置，优先级高于 `DISABLE_TOOLS`）     | （空）            | 所有服务器               | `ENABLE_TOOLS_ONLY="write_file,command_bg_start"`                                                                                |
 | `DISABLE_RESOURCES`         | 逗号分隔的要禁用的资源列表                                   | （空）            | 所有服务器               | `DISABLE_RESOURCES="file,directory"`                                                                                             |
 | `ENABLE_RESOURCES_ONLY`     | 逗号分隔的只允许启用的资源列表（如果设置，优先级高于 `DISABLE_RESOURCES`） | （空）            | 所有服务器               | `ENABLE_RESOURCES_ONLY="config"`                                                                                                 |
+
+### 命令特定编码配置
+
+MCP OS Server 支持为不同的命令设置特定的字符编码，这在处理输出编码不一致的命令时特别有用。编码选择遵循以下优先级：
+
+1. **用户指定编码**：在 `command_execute` 或 `command_bg_start` 工具中通过 `encoding` 参数指定
+2. **命令特定编码**：通过 `DEFAULT_ENCODING_<command>` 环境变量设置
+3. **全局默认编码**：通过 `DEFAULT_ENCODING` 环境变量设置，或系统默认编码
+
+#### 示例配置
+
+```bash
+# 设置全局默认编码为 UTF-8，但为特定命令设置不同编码
+DEFAULT_ENCODING=utf-8 DEFAULT_ENCODING_dir=gbk DEFAULT_ENCODING_chcp=cp936 ALLOWED_COMMANDS="ls,dir,chcp,npm" uv --project . run mcp-os-server command-server
+```
+
+在这个配置中：
+- `dir` 命令使用 `gbk` 编码（适用于 Windows 中文环境）
+- `chcp` 命令使用 `cp936` 编码
+- `ls` 和 `npm` 命令使用全局默认的 `utf-8` 编码
+
+#### 编码选择示例
+
+```python
+# 假设环境变量设置如下：
+# DEFAULT_ENCODING=utf-8
+# DEFAULT_ENCODING_npm=utf-8
+# DEFAULT_ENCODING_dir=gbk
+
+# 情况1：用户指定编码（最高优先级）
+command_execute(command="dir", encoding="cp936")  # 使用 cp936
+
+# 情况2：使用命令特定编码
+command_execute(command="dir")  # 使用 gbk（来自 DEFAULT_ENCODING_dir）
+
+# 情况3：使用全局默认编码
+command_execute(command="ls")   # 使用 utf-8（来自 DEFAULT_ENCODING）
+```
 
 ## API参考
 

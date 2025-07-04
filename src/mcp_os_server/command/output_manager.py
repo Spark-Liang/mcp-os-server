@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import time
@@ -18,6 +19,8 @@ from .exceptions import (
 )
 from .interfaces import IOutputManager, OutputMessageEntry
 from .output_logger import YamlOutputLogger, SqliteOutputLogger
+
+_logger = logging.getLogger(__name__)
 
 
 class OutputManager(IOutputManager):
@@ -140,7 +143,7 @@ class OutputManager(IOutputManager):
                     logger.close()
                     del self._loggers[process_id][output_key]
                 except Exception as e:
-                    print(f"Error during shutdown for process {process_id}, output {output_key}: {e}")
+                    _logger.error("Error during shutdown for process %s, output %s: %s", process_id, output_key, e)
                     last_exception = e
             
             log_file_path = self._get_log_file_path(process_id, "any_output_key")
@@ -157,7 +160,7 @@ class OutputManager(IOutputManager):
             try:
                 os.rmdir(self.output_storage_path)
             except OSError as e:
-                print(f"Warning: Could not remove output storage directory {self.output_storage_path}: {e}")
+                _logger.warning("Could not remove output storage directory %s: %s", self.output_storage_path, e)
         if last_exception:
             raise last_exception
     

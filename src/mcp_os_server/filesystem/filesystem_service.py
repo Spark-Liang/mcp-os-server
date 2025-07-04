@@ -33,7 +33,7 @@ class FilesystemService:
             # 将所有允许的目录转换为Path对象并进行标准化处理
             abs_path = Path(dir_path).resolve()
             self.allowed_dirs.append(abs_path)
-        logger.info(f"初始化文件系统服务，允许的目录: {self.allowed_dirs}")
+        logger.info("初始化文件系统服务，允许的目录: %s", self.allowed_dirs)
 
     def is_path_allowed(self, path: str) -> bool:
         """

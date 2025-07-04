@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sys
 import time
@@ -27,6 +28,8 @@ from .interfaces import (
     ProcessInfo,
     ProcessStatus,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Process(IProcess):
@@ -194,12 +197,46 @@ class ProcessManager(IProcessManager):
                     self._cleanup_single_process(process_id),
                     name=f"cleanup_process_{process_id}"
                 )
+                # 不需要保存 task 引用，因为它是自清理的
             else:
                 # 如果主循环不可用，使用当前循环
-                task = asyncio.create_task(
-                    self._cleanup_single_process(process_id),
-                    name=f"cleanup_process_{process_id}"
-                )
+                try:
+                    loop = asyncio.get_running_loop()
+                    task = loop.create_task(
+                        self._cleanup_single_process(process_id),
+                        name=f"cleanup_process_{process_id}"
+                    )
+                    # 不需要保存 task 引用，因为它是自清理的
+                except RuntimeError:
+                    # 没有运行的事件循环，尝试从全局获取一个
+                    try:
+                        # 获取当前线程的事件循环
+                        loop = asyncio.get_event_loop()
+                        if loop and not loop.is_closed():
+                            task = loop.create_task(
+                                self._cleanup_single_process(process_id),
+                                name=f"cleanup_process_{process_id}"
+                            )
+                        else:
+                            # 如果真的没有可用的事件循环，我们直接在线程池中执行清理
+                            import threading
+                            import os
+                            def sync_cleanup():
+                                # 这是一个同步的清理，仅作为最后的备用方案
+                                try:
+                                    # 直接从 _processes 中移除进程，跳过异步清理
+                                    self._cleanup_handles.pop(process_id, None)
+                                    if process_id in self._processes:
+                                        del self._processes[process_id]
+                                except Exception:
+                                    # 静默处理清理错误
+                                    pass
+                            
+                            # 在后台线程中执行同步清理
+                            threading.Thread(target=sync_cleanup, daemon=True).start()
+                    except Exception:
+                        # 如果所有方法都失败，至少清理 cleanup handle
+                        self._cleanup_handles.pop(process_id, None)
 
     async def _cleanup_single_process(self, process_id: str) -> None:
         """清理单个进程"""
@@ -212,12 +249,12 @@ class ProcessManager(IProcessManager):
                 
             process = self._processes[process_id]
             
-            # 只清理非运行状态的进程
-            if process._info.status not in [ProcessStatus.RUNNING, ProcessStatus.TERMINATED]:
+            # 只清理非运行状态的进程（包括完成、失败、终止、错误状态）
+            if process._info.status != ProcessStatus.RUNNING:
                 await self.clean_processes([process_id])
-        except Exception:
+        except Exception as e:
             # 静默处理清理错误，避免影响其他进程
-            pass
+            logger.warning("Error during cleanup for process %s: %s", process_id, e, exc_info=True)
 
     def _schedule_cleanup_for_process(self, process_id: str) -> None:
         """为进程安排延迟清理任务"""
@@ -227,14 +264,29 @@ class ProcessManager(IProcessManager):
             if not old_handle.cancelled():
                 old_handle.cancel()
         
-        # 安排新的清理任务
-        loop = asyncio.get_event_loop()
-        handle = loop.call_later(
-            self._process_retention_seconds,
-            self._schedule_process_cleanup,
-            process_id
-        )
-        self._cleanup_handles[process_id] = handle
+        # 安排新的清理任务，使用正确的事件循环
+        loop = None
+        if self._main_loop and not self._main_loop.is_closed():
+            loop = self._main_loop
+        else:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # 如果没有运行的事件循环，尝试获取或创建一个
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    # 如果真的无法获取事件循环，记录错误并跳过清理安排
+                    logger.warning("Could not schedule cleanup for process %s: no event loop available", process_id)
+                    return
+        
+        if loop:
+            handle = loop.call_later(
+                self._process_retention_seconds,
+                self._schedule_process_cleanup,
+                process_id
+            )
+            self._cleanup_handles[process_id] = handle
 
     async def start_process(
         self,
@@ -517,6 +569,7 @@ class ProcessManager(IProcessManager):
                 await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
                 await self._output_manager.store_output(process_id, "stderr", f"Warning: Output reading interrupted due to error: {e}")
         finally:
+            # 在所有清理工作完成后设置end_time，确保时间的准确性
             info.end_time = datetime.now(timezone.utc)
             
             # 确保输出读取任务完成后才设置 completion event
@@ -546,11 +599,17 @@ class ProcessManager(IProcessManager):
         await self._processes[process_id].stop(force=force, reason=reason)
 
     async def get_process(self, process_id: str) -> IProcess:
+        # 首先清理过期的进程
+        await self._cleanup_expired_processes()
+        
         if process_id not in self._processes:
             raise ProcessNotFoundError(f"Process with ID {process_id} not found.")
         return self._processes[process_id]
 
     async def get_process_info(self, process_id: str) -> ProcessInfo:
+        # 首先清理过期的进程
+        await self._cleanup_expired_processes()
+        
         if process_id not in self._processes:
             raise ProcessNotFoundError(f"Process with ID {process_id} not found.")
         return await self._processes[process_id].get_details()
@@ -558,6 +617,9 @@ class ProcessManager(IProcessManager):
     async def list_processes(
         self, status: Optional[ProcessStatus] = None, labels: Optional[List[str]] = None
     ) -> List[ProcessInfo]:
+        # 在列表查询时进行过期清理以保持列表的准确性
+        await self._cleanup_expired_processes()
+        
         procs = list(self._processes.values())
 
         if status:
@@ -567,6 +629,27 @@ class ProcessManager(IProcessManager):
             procs = [p for p in procs if set(labels).issubset(set(p._info.labels))]
 
         return [p._info for p in procs]
+
+    async def _cleanup_expired_processes(self) -> None:
+        """清理所有已过期的进程"""
+        current_time = time.time()
+        expired_process_ids = []
+        
+        for process_id, process in self._processes.items():
+            # 只检查非运行状态的进程
+            if process._info.status != ProcessStatus.RUNNING and process._info.end_time:
+                # 计算进程结束后经过的时间
+                end_timestamp = process._info.end_time.timestamp()
+                elapsed_time = current_time - end_timestamp
+                
+                if elapsed_time >= self._process_retention_seconds:
+                    expired_process_ids.append(process_id)
+        
+        if expired_process_ids:
+            try:
+                await self.clean_processes(expired_process_ids)
+            except Exception as e:
+                logger.error(f"Error during cleanup of expired processes {expired_process_ids}: {e}", exc_info=True)
 
     async def clean_processes(self, process_ids: List[str]) -> Dict[str, str]:
         results = {}

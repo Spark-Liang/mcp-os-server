@@ -60,6 +60,15 @@ async def process_manager(mock_output_manager: IOutputManager) -> AsyncGenerator
     await pm.shutdown()
 
 
+@pytest_asyncio.fixture
+async def process_manager_short_retention(mock_output_manager: IOutputManager) -> AsyncGenerator[IProcessManager, None]:
+    """Fixture to create a ProcessManager instance with 5 seconds retention time."""
+    pm = ProcessManager(output_manager=mock_output_manager, process_retention_seconds=5)
+    await pm.initialize()
+    yield pm
+    await pm.shutdown()
+
+
 async def test_start_process(process_manager: IProcessManager):
     """Test starting a simple process and check its initial state."""
     command = ["echo", "hello world"]
@@ -215,4 +224,131 @@ async def test_command_not_found(process_manager: IProcessManager):
             command=["non_existent_command_12345"],
             directory=".",
             description="Non-existent command",
-        ) 
+        )
+
+
+@pytest.mark.timeout(15)  # Give this test more time due to retention waiting
+async def test_process_retention_seconds_auto_cleanup(process_manager_short_retention: IProcessManager):
+    """Test that completed processes are automatically cleaned up after retention time."""
+    # Start a short-running process
+    process = await process_manager_short_retention.start_process(
+        command=["echo", "retention test"],
+        directory=".",
+        description="Test retention cleanup",
+        labels=["retention-test"],
+    )
+    
+    # Wait for completion
+    completed_info = await process.wait_for_completion()
+    assert completed_info.status == ProcessStatus.COMPLETED
+    
+    # Process should still be available immediately after completion
+    process_info = await process_manager_short_retention.get_process_info(process.pid)
+    assert process_info.pid == process.pid
+    
+    # Process should still be in the list
+    all_processes = await process_manager_short_retention.list_processes()
+    assert any(p.pid == process.pid for p in all_processes)
+    
+    # Wait for retention time plus a small buffer (5.5 seconds)
+    await asyncio.sleep(5.5)
+    
+    # Now the process should be automatically cleaned up
+    with pytest.raises(ProcessNotFoundError):
+        await process_manager_short_retention.get_process_info(process.pid)
+    
+    # Process should no longer be in the list
+    all_processes_after = await process_manager_short_retention.list_processes()
+    assert not any(p.pid == process.pid for p in all_processes_after)
+
+
+@pytest.mark.timeout(15)  # Give this test more time due to retention waiting
+async def test_process_retention_manual_clean_cancels_auto_cleanup(process_manager_short_retention: IProcessManager):
+    """Test that manually cleaning a process cancels its automatic cleanup."""
+    # Start a short-running process
+    process = await process_manager_short_retention.start_process(
+        command=["echo", "manual clean test"],
+        directory=".",
+        description="Test manual clean",
+        labels=["manual-clean-test"],
+    )
+    
+    # Wait for completion
+    completed_info = await process.wait_for_completion()
+    assert completed_info.status == ProcessStatus.COMPLETED
+    
+    # Manually clean the process before retention time expires
+    results = await process_manager_short_retention.clean_processes([process.pid])
+    assert results[process.pid] == "Success"
+    
+    # Process should be gone immediately
+    with pytest.raises(ProcessNotFoundError):
+        await process_manager_short_retention.get_process_info(process.pid)
+    
+    # Wait past the retention time to ensure auto-cleanup doesn't cause issues (5.5 seconds)
+    await asyncio.sleep(5.5)
+    
+    # Process should still be gone (not causing any errors)
+    with pytest.raises(ProcessNotFoundError):
+        await process_manager_short_retention.get_process_info(process.pid)
+
+
+@pytest.mark.timeout(15)  # Give this test more time due to retention waiting
+async def test_process_retention_timeout_process_cleanup(process_manager_short_retention: IProcessManager):
+    """Test that timed-out processes are also cleaned up after retention time."""
+    # Start a process that will timeout
+    process = await process_manager_short_retention.start_process(
+        command=["sleep", "10"],
+        directory=".",
+        description="Test timeout retention",
+        timeout=1,  # Very short timeout
+    )
+    
+    # Wait for timeout and completion
+    completed_info = await process.wait_for_completion()
+    assert completed_info.status == ProcessStatus.TERMINATED
+    assert "timed out" in (completed_info.error_message or "").lower()
+    
+    # Process should be in the list
+    all_processes = await process_manager_short_retention.list_processes()
+    assert any(p.pid == process.pid for p in all_processes)
+
+    # Process should still be available immediately after timeout
+    process_info = await process_manager_short_retention.get_process_info(process.pid)
+    assert process_info.pid == process.pid
+    assert process_info.status == ProcessStatus.TERMINATED
+
+    # Wait for retention time plus buffer (5.5 seconds instead of 6)
+    await asyncio.sleep(5.5)
+    
+    # Now the timed-out process should be automatically cleaned up
+    with pytest.raises(ProcessNotFoundError):
+        await process_manager_short_retention.get_process_info(process.pid)
+
+
+@pytest.mark.timeout(15)  # Give this test more time due to retention waiting
+async def test_process_retention_running_process_not_cleaned(process_manager_short_retention: IProcessManager):
+    """Test that running processes are not cleaned up even after retention time."""
+    # Start a long-running process
+    process = await process_manager_short_retention.start_process(
+        command=["sleep", "20"],
+        directory=".",
+        description="Test long running",
+        labels=["long-running"],
+    )
+    
+    # Verify it's running
+    info = await process.get_details()
+    assert info.status == ProcessStatus.RUNNING
+    
+    # Wait past the retention time (5.5 seconds)
+    await asyncio.sleep(5.5)
+    
+    # Running process should still be available
+    process_info = await process_manager_short_retention.get_process_info(process.pid)
+    assert process_info.pid == process.pid
+    assert process_info.status == ProcessStatus.RUNNING
+    
+    # Clean up
+    await process.stop(force=True)
+    await process.wait_for_completion() 

@@ -71,7 +71,7 @@ class WebManager:
             self._setup_template_folder()
             self._logger.info("WebManager initialized successfully")
         except Exception as e:
-            self._logger.error(f"Failed to initialize WebManager: {e}")
+            self._logger.error("Failed to initialize WebManager: %s", e, exc_info=True)
             raise
 
     def _setup_template_folder(self) -> None:
@@ -160,7 +160,7 @@ class WebManager:
             if url_prefix:
                 # For URL prefix support, we could use a sub-application
                 # For now, we'll note this as a potential enhancement
-                self._logger.warning(f"URL prefix '{url_prefix}' is noted but not implemented yet")
+                self._logger.warning("URL prefix '%s' is noted but not implemented yet", url_prefix)
             
             # Use Uvicorn server
             self._server_thread = threading.Thread(
@@ -170,11 +170,11 @@ class WebManager:
             )
             
             self._server_thread.start()
-            self._logger.info(f"Web interface started on {host}:{port or 8080}")
+            self._logger.info("Web interface started on %s:%s", host, port or 8080)
             
         except Exception as e:
-            error_msg = f"Failed to start web interface: {e}"
-            self._logger.error(error_msg)
+            error_msg = "Failed to start web interface: %s" % e
+            self._logger.error(error_msg, exc_info=True)
             raise WebInterfaceError(error_msg) from e
 
     def _run_uvicorn_server(self, host: str, port: int, debug: bool) -> None:
@@ -191,7 +191,7 @@ class WebManager:
             self._server = uvicorn.Server(config)
             self._server.run()
         except Exception as e:
-            self._logger.error(f"Uvicorn server error: {e}")
+            self._logger.error("Uvicorn server error: %s", e, exc_info=True)
 
     # Web UI route handlers
     async def _index(self, request: Request):
@@ -256,8 +256,8 @@ class WebManager:
         except HTTPException:
             raise
         except Exception as e:
-            self._logger.error(f"Error getting processes: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            self._logger.error("Error getting processes: %s", e, exc_info=True)
+            raise WebInterfaceError("Failed to get processes: %s" % e) from e
 
     async def _api_get_process_detail(self, process_id: str):
         """API endpoint to get detailed process information."""
@@ -271,8 +271,8 @@ class WebManager:
         except ProcessNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:
-            self._logger.error(f"Error getting process detail: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            self._logger.error("Error getting process detail: %s", e, exc_info=True)
+            raise WebInterfaceError("Failed to get process detail: %s" % e) from e
 
     async def _api_get_process_output(self,
                                      process_id: str,
@@ -314,8 +314,8 @@ class WebManager:
         except HTTPException:
             raise
         except Exception as e:
-            self._logger.error(f"Error getting process output: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            self._logger.error("Error getting process output: %s", e, exc_info=True)
+            raise WebInterfaceError("Failed to get process output: %s" % e) from e
 
     async def _api_stop_process(self, process_id: str, request: StopProcessRequest):
         """API endpoint to stop a process."""
@@ -330,8 +330,8 @@ class WebManager:
         except ProcessNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:
-            self._logger.error(f"Error stopping process: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            self._logger.error("Error stopping process: %s", e, exc_info=True)
+            raise WebInterfaceError("Failed to stop process: %s" % e) from e
 
     async def _api_clean_process(self, process_id: str):
         """API endpoint to clean a process."""
@@ -346,8 +346,8 @@ class WebManager:
         except ProcessNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
         except Exception as e:
-            self._logger.error(f"Error cleaning process: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            self._logger.error("Error cleaning process: %s", e, exc_info=True)
+            raise WebInterfaceError("Failed to clean process: %s" % e) from e
 
     async def _api_get_thread_stacks(self):
         """API endpoint to get current thread stack traces."""
@@ -358,7 +358,7 @@ class WebManager:
                 'data': thread_data
             }
         except Exception as e:
-            self._logger.error(f"Error getting thread stacks: {e}")
+            self._logger.error("Error getting thread stacks: %s", e, exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
     async def _api_download_thread_stacks(self):
@@ -381,7 +381,7 @@ class WebManager:
             )
             
         except Exception as e:
-            self._logger.error(f"Error downloading thread stacks: {e}")
+            self._logger.error("Error downloading thread stacks: %s", e, exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
     async def _api_get_event_loop_tasks(self):
@@ -393,7 +393,7 @@ class WebManager:
                 'data': task_data
             }
         except Exception as e:
-            self._logger.error(f"Error getting event loop tasks: {e}")
+            self._logger.error("Error getting event loop tasks: %s", e, exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
     async def _api_download_event_loop_tasks(self):
@@ -416,7 +416,7 @@ class WebManager:
             )
             
         except Exception as e:
-            self._logger.error(f"Error downloading event loop tasks: {e}")
+            self._logger.error("Error downloading event loop tasks: %s", e, exc_info=True)
             raise HTTPException(status_code=500, detail=str(e))
 
     # IWebManager interface implementation
@@ -432,8 +432,8 @@ class WebManager:
                 self._command_executor.list_process(status=status, labels=labels)
             )
         except Exception as e:
-            self._logger.error(f"Error getting processes: {e}")
-            raise WebInterfaceError(f"Failed to get processes: {e}") from e
+            self._logger.error("Error getting processes: %s", e, exc_info=True)
+            raise WebInterfaceError("Failed to get processes: %s" % e) from e
 
     async def get_process_detail(self, pid: str) -> ProcessInfo:
         """Get detailed information for a single process."""
@@ -447,8 +447,8 @@ class WebManager:
         except ProcessNotFoundError:
             raise
         except Exception as e:
-            self._logger.error(f"Error getting process detail: {e}")
-            raise WebInterfaceError(f"Failed to get process detail: {e}") from e
+            self._logger.error("Error getting process detail: %s", e, exc_info=True)
+            raise WebInterfaceError("Failed to get process detail: %s" % e) from e
 
     async def get_process_output(self,
                                  pid: str,
@@ -506,8 +506,8 @@ class WebManager:
         except ProcessNotFoundError:
             raise
         except Exception as e:
-            self._logger.error(f"Error getting process output: {e}")
-            raise WebInterfaceError(f"Failed to get process output: {e}") from e
+            self._logger.error("Error getting process output: %s", e, exc_info=True)
+            raise WebInterfaceError("Failed to get process output: %s" % e) from e
 
     async def stop_process(self, pid: str, force: bool = False) -> Dict[str, str]:
         """Stop the specified process."""
@@ -527,8 +527,8 @@ class WebManager:
         except ProcessNotFoundError:
             raise
         except Exception as e:
-            self._logger.error(f"Error stopping process: {e}")
-            raise WebInterfaceError(f"Failed to stop process: {e}") from e
+            self._logger.error("Error stopping process: %s", e, exc_info=True)
+            raise WebInterfaceError("Failed to stop process: %s" % e) from e
 
     async def clean_process(self, pid: str) -> Dict[str, str]:
         """Clean the specified process."""
@@ -548,8 +548,8 @@ class WebManager:
         except ProcessNotFoundError:
             raise
         except Exception as e:
-            self._logger.error(f"Error cleaning process: {e}")
-            raise WebInterfaceError(f"Failed to clean process: {e}") from e
+            self._logger.error("Error cleaning process: %s", e, exc_info=True)
+            raise WebInterfaceError("Failed to clean process: %s" % e) from e
 
     async def clean_all_processes(self) -> Dict[str, Union[str, int]]:
         """Clean all completed or failed processes."""
@@ -582,8 +582,8 @@ class WebManager:
             }
             
         except Exception as e:
-            self._logger.error(f"Error cleaning all processes: {e}")
-            raise WebInterfaceError(f"Failed to clean all processes: {e}") from e
+            self._logger.error("Error cleaning all processes: %s", e, exc_info=True)
+            raise WebInterfaceError("Failed to clean all processes: %s" % e) from e
 
     async def clean_selected_processes(self, pids: List[str]) -> Dict[str, List[Dict]]:
         """Clean selected processes."""
@@ -623,8 +623,8 @@ class WebManager:
             }
             
         except Exception as e:
-            self._logger.error(f"Error cleaning selected processes: {e}")
-            raise WebInterfaceError(f"Failed to clean selected processes: {e}") from e
+            self._logger.error("Error cleaning selected processes: %s", e, exc_info=True)
+            raise WebInterfaceError("Failed to clean selected processes: %s" % e) from e
 
     async def shutdown(self) -> None:
         """Shutdown the Web Manager and release all resources."""
@@ -642,7 +642,7 @@ class WebManager:
             self._logger.info("WebManager shutdown completed")
             
         except Exception as e:
-            self._logger.error(f"Error during WebManager shutdown: {e}")
+            self._logger.error("Error during WebManager shutdown: %s", e, exc_info=True)
             raise
 
     # Utility methods
