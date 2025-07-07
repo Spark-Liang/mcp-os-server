@@ -15,6 +15,12 @@ from PIL import Image as PILImage
 from pydantic import Field
 
 from .filesystem_service import FilesystemService
+from .models import (
+    FileReadResult,
+    DirectoryItem,
+    FileInfo,
+    FileEditResult
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,11 +92,11 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
     def __load_image_by_pillow(path: str, max_bytes: Optional[int] = None) -> Image:
         """读取图片文件并转换为Image对象"""
         logger.info("读取图片文件: %s", path)
-        is_allowed = filesystem_service.is_path_allowed(path)
-        if not is_allowed:
-            raise PermissionError(f"路径不在允许的目录中: {path}")
+        
+        # 使用assert_is_allowed_and_resolve检查路径并获取解析后的Path对象
+        resolved_path = filesystem_service.assert_is_allowed_and_resolve(path)
 
-        return _do_load_image_by_pillow(path, max_bytes)
+        return _do_load_image_by_pillow(str(resolved_path), max_bytes)
 
     async def _do_get_filesystem_info() -> Dict[str, Any]:
         """
@@ -138,7 +144,7 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
     @mcp.tool()
     async def fs_read_multiple_files(
         paths: List[str] = Field(..., description="要读取的文件的绝对路径列表")
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, FileReadResult]:
         """
         读取多个文件的内容
 
@@ -243,7 +249,7 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
     @mcp.tool()
     async def fs_list_directory(
         path: str = Field(..., description="要列出的目录的绝对路径")
-    ) -> List[Dict[str, Any]]:
+    ) -> List[DirectoryItem]:
         """
         列出目录内容
 
@@ -299,7 +305,7 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
     @mcp.tool()
     async def fs_get_file_info(
         path: str = Field(..., description="文件或目录的绝对路径")
-    ) -> Dict[str, Any]:
+    ) -> FileInfo:
         """
         获取文件或目录的详细信息
 
@@ -318,7 +324,7 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
             ..., description="编辑操作列表，每个操作包含 oldText 和 newText"
         ),
         dry_run: bool = Field(False, description="是否为预览模式（不实际修改文件）"),
-    ) -> Dict[str, Any]:
+    ) -> FileEditResult:
         """
         编辑文件内容
 
@@ -366,7 +372,7 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
             JSON格式的目录内容列表
         """
         items = await filesystem_service.list_directory(path)
-        return json.dumps(items, indent=2, ensure_ascii=False)
+        return json.dumps([item.model_dump() for item in items], indent=2, ensure_ascii=False)
 
     @mcp.resource("config://filesystem")
     async def get_config_resource() -> str:
@@ -380,12 +386,13 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
         return json.dumps(await _do_get_filesystem_info(), indent=2, ensure_ascii=False)
 
 
-def create_server(allowed_dirs: List[str], host: str = "127.0.0.1", port: int = 8000) -> "FilteredFastMCP":
+def create_server(allowed_dirs: List[str], features: Optional[List] = None, host: str = "127.0.0.1", port: int = 8000) -> "FilteredFastMCP":
     """
     创建并配置MCP文件系统服务器。
 
     Args:
         allowed_dirs (List[str]): 允许文件操作的根目录列表。
+        features (Optional[List]): 文件系统服务功能特性列表。
         host (str): 服务器绑定的主机地址。
         port (int): 服务器监听的端口。
 
@@ -402,7 +409,7 @@ def create_server(allowed_dirs: List[str], host: str = "127.0.0.1", port: int = 
         # 将环境变量中的目录添加到允许列表中
         allowed_dirs.extend(env_allowed_dirs)
 
-    filesystem_service = FilesystemService(allowed_dirs)
+    filesystem_service = FilesystemService(allowed_dirs, features=features)
     mcp = FilteredFastMCP(name="filesystem", version="0.1.0", host=host, port=port)
     define_mcp_server(mcp, filesystem_service)
     return mcp
