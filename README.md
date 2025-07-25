@@ -29,6 +29,7 @@
 *   **图片处理能力**：支持读取图片文件，并可根据大小限制自动创建缩略图，返回Image内容。
 *   **批量操作支持**：支持批量读取多个文件或图片。
 *   **文件内容编辑**：支持对文件内容进行查找替换式的编辑。
+*   **Cursor目录格式支持**：支持处理Cursor风格的路径格式（如 `/e:/Programming/Demo/project/file.txt`），自动转换为标准系统路径。
 *   **多种服务器模式**：支持stdio（默认）、SSE和streamable HTTP模式。
 
 ### MCP Unified Server
@@ -198,8 +199,10 @@ ALLOWED_COMMANDS="ls,cat,echo" ALLOWED_DIRS="/tmp" uv --project . run mcp-os-ser
 | `ALLOWED_DIRS`              | 允许访问的目录列表（操作系统路径分隔符分隔）                          | （空 - 不允许任何目录）  | Filesystem, Unified | `ALLOWED_DIRS="/var/www/html,/home/user/docs"` (Linux/macOS) <br> `ALLOWED_DIRS="C:\Users\User\Documents;D:\Projects"` (Windows) |
 | `PROCESS_RETENTION_SECONDS` | 清理前保留已完成进程的时间（秒）                                | `3600` (1小时)   | Command, Unified    | `PROCESS_RETENTION_SECONDS=86400`                                                                                                |
 | `DEFAULT_ENCODING`          | 进程输出的默认字符编码                                     | 系统终端编码或`utf-8` | Command, Unified    | `DEFAULT_ENCODING=gbk`                                                                                                           |
+| `DEFAULT_TIMEOUT`           | 命令运行的默认超时时间（秒）                               | `15`             | Command, Unified    | `DEFAULT_TIMEOUT=180`                                                                                                            |
 | `DEFAULT_ENCODING_<command>` | 为特定命令设置默认字符编码（优先级高于 `DEFAULT_ENCODING`）         | （空）            | Command, Unified    | `DEFAULT_ENCODING_npm=utf-8 DEFAULT_ENCODING_dir=gbk`                                                                            |
 | `OUTPUT_STORAGE_PATH`       | 命令输出日志的存储路径                                     | 临时目录           | Command, Unified    | `OUTPUT_STORAGE_PATH=/var/log/mcp-os-server`                                                                                     |
+| `FILESYSTEM_SERVICE_FEATURES` | 文件系统服务额外功能特性列表（逗号分隔）                      | （空）            | Filesystem, Unified | `FILESYSTEM_SERVICE_FEATURES="support_cursor_directory_format"`                                                                  |
 | `DISABLE_TOOLS`             | 逗号分隔的要禁用的工具列表                                   | （空）            | 所有服务器               | `DISABLE_TOOLS="read_file,command_execute"`                                                                                      |
 | `ENABLE_TOOLS_ONLY`         | 逗号分隔的只允许启用的工具列表（如果设置，优先级高于 `DISABLE_TOOLS`）     | （空）            | 所有服务器               | `ENABLE_TOOLS_ONLY="write_file,command_bg_start"`                                                                                |
 | `DISABLE_RESOURCES`         | 逗号分隔的要禁用的资源列表                                   | （空）            | 所有服务器               | `DISABLE_RESOURCES="file,directory"`                                                                                             |
@@ -243,6 +246,49 @@ command_execute(command="dir")  # 使用 gbk（来自 DEFAULT_ENCODING_dir）
 command_execute(command="ls")   # 使用 utf-8（来自 DEFAULT_ENCODING）
 ```
 
+### 文件系统服务功能特性配置
+
+MCP OS Server 的文件系统服务支持通过 `FILESYSTEM_SERVICE_FEATURES` 环境变量启用额外的功能特性。
+
+#### 可用特性
+
+| 特性名称                        | 描述                                                  | 示例                                    |
+| ----------------------------- | --------------------------------------------------- | ------------------------------------- |
+| `support_cursor_directory_format` | 支持Cursor目录格式路径转换，将 `/drive:/path` 格式自动转换为 `drive:/path`<br/>**⚠️ 注意：此功能仅在 Windows 系统上支持，在其他操作系统上会被忽略** | `/e:/Programming/Demo` → `e:/Programming/Demo` |
+
+#### 配置示例
+
+```bash
+# 启用Cursor目录格式支持
+FILESYSTEM_SERVICE_FEATURES="support_cursor_directory_format" ALLOWED_DIRS="E:/Programming" uv --project . run mcp-os-server filesystem-server
+
+# 启用多个特性（未来可能会有更多特性）
+FILESYSTEM_SERVICE_FEATURES="support_cursor_directory_format,other_feature" ALLOWED_DIRS="E:/Programming" uv --project . run mcp-os-server unified-server
+```
+
+#### Cursor目录格式支持详情
+
+当启用 `support_cursor_directory_format` 特性时：
+
+*   **输入路径转换**：将形如 `/e:/Programming/Demo/project/file.txt` 的路径自动转换为 `e:/Programming/Demo/project/file.txt`
+*   **系统兼容性**：⚠️ **仅在 Windows 系统上生效**，在 Linux/macOS 等其他操作系统上此特性会被自动忽略
+*   **路径格式要求**：严格匹配 `/<单字母盘符>:` 格式（例如 `/c:`、`/e:`），其中盘符必须是单个字母（A-Z）
+*   **兼容性**：转换后的路径仍需符合 `ALLOWED_DIRS` 的安全检查
+*   **适用场景**：特别适用于与Cursor编辑器集成，处理其特殊的路径格式
+*   **安全性**：转换过程不会绕过现有的安全检查机制
+
+使用示例：
+
+```bash
+# 设置允许的目录和启用特性
+ALLOWED_DIRS="E:/Programming,D:/Projects" FILESYSTEM_SERVICE_FEATURES="support_cursor_directory_format" uv --project . run mcp-os-server filesystem-server
+
+# 现在可以使用Cursor格式的路径：
+# 输入: /e:/Programming/Demo/deepinsight-demo/test-results/data-preview-tablet.png
+# 自动转换为: e:/Programming/Demo/deepinsight-demo/test-results/data-preview-tablet.png
+# 然后进行路径允许性检查
+```
+
 ## API参考
 
 MCP OS Server 暴露了以下 MCP 工具，客户端可以通过它们与服务器进行交互。
@@ -261,7 +307,7 @@ MCP OS Server 暴露了以下 MCP 工具，客户端可以通过它们与服务�
 | `args`      | string[]   | 否   | 命令的参数列表                           |
 | `directory` | string     | 是   | 命令执行的工作目录                       |
 | `stdin`     | string     | 否   | 通过stdin传递给命令的输入                |
-| `timeout`   | integer    | 否   | 最大执行时间（秒）（默认：15）           |
+| `timeout`   | integer    | 否   | 最大执行时间（秒）（默认：`DEFAULT_TIMEOUT` 环境变量或 15）           |
 | `envs`      | object     | 否   | 命令的附加环境变量                       |
 | `encoding`  | string     | 否   | 命令输出的字符编码（例如：'utf-8', 'gbk'） |
 | `limit_lines` | integer  | 否   | 每个TextContent返回的最大行数（默认：500） |
@@ -299,7 +345,7 @@ MCP OS Server 暴露了以下 MCP 工具，客户端可以通过它们与服务�
 | `stdin`      | string     | 否   | 通过stdin传递给命令的输入              |
 | `envs`       | object     | 否   | 命令的附加环境变量                     |
 | `encoding`   | string     | 否   | 命令输出的字符编码                     |
-| `timeout`    | integer    | 否   | 最大执行时间（秒）                     |
+| `timeout`    | integer    | 否   | 最大执行时间（秒）（默认：`DEFAULT_TIMEOUT` 环境变量或 15）                     |
 
 **响应格式**
 

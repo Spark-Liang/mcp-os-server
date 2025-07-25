@@ -59,8 +59,15 @@ def _get_server_start_params(
                 args.extend(["--path", "/mcp"])
     else: # Default to UV_START_MODE
         cmd = "uv"
+        # project_root is already an absolute Path object (e.g., E:\path\to\project)
+        # str(project_root) on Windows will correctly produce 'E:\\path\\to\\project'
+        project_root_final_str = str(project_root) # Get the final string representation
+        if sys.platform.startswith('win'):
+            # For debugging: print the path being passed to uv --project
+            print(f"[DEBUG] Windows: project_root for uv --project is: {project_root_final_str}", file=sys.stderr)
+
         args = [
-            "--project", str(project_root),
+            "--project", project_root_final_str,
             "run", "mcp-os-server", server_type + "-server", "--mode", mode
         ]
         if mode in ["sse", "http"]:
@@ -222,6 +229,12 @@ def validate_error_message_format(text: str, error_type: str) -> bool:
     return pattern in text
 
 
+@pytest.mark.parametrize(
+    "process_manager_type", [
+        # "asyncio", 
+        "subprocess",
+    ]
+)
 class BaseCommandServerIntegrationTest(ABC):
     """Abstract base class for command server integration tests."""
 
@@ -229,6 +242,7 @@ class BaseCommandServerIntegrationTest(ABC):
     async def new_mcp_client_session(self, 
                                      allowed_commands: str,
                                      output_storage_path: str,
+                                     process_manager_type: str,
                                      process_retention_seconds: Optional[int] = None) -> AsyncGenerator[ClientSession, None]:
         """
         Abstract factory method that must be implemented by subclasses to create
@@ -237,6 +251,7 @@ class BaseCommandServerIntegrationTest(ABC):
         Args:
             allowed_commands: Comma-separated list of allowed commands
             output_storage_path: Path for output storage
+            process_manager_type: The type of process manager to use ('asyncio' or 'subprocess')
             process_retention_seconds: Process retention time in seconds
             
         Yields:
@@ -245,7 +260,7 @@ class BaseCommandServerIntegrationTest(ABC):
         ...
 
     @pytest_asyncio.fixture(scope="function")
-    async def mcp_client_session(self) -> AsyncGenerator[ClientSession, None]:
+    async def mcp_client_session(self, process_manager_type: str) -> AsyncGenerator[ClientSession, None]:
         """
         Pytest fixture to start and manage the lifecycle of the MCP command server
         and provide an MCP client session for tests.
@@ -254,11 +269,19 @@ class BaseCommandServerIntegrationTest(ABC):
         import sys
         
         # Set up default parameters
-        allowed_commands = "echo,ls,sleep,cat,grep,pwd," + sys.executable + ",nonexistent-command-12345"
+        allowed_commands = "echo,ls,sleep,cat,grep,pwd,uv," + sys.executable + ",nonexistent-command-12345"
         
         # Add npm to allowed commands if npm testing is enabled
         if os.environ.get('TEST_NPM_ENABLED', '').lower() in ('1', 'true', 'yes'):
             allowed_commands += ",npm"
+
+        # Add node to allowed commands if node testing is enabled
+        if os.environ.get('TEST_NODE_ENABLED', '').lower() in ('1', 'true', 'yes'):
+            allowed_commands += ",node"
+
+        # Add uv to allowed commands if uv testing is enabled
+        if os.environ.get('TEST_UV_ENABLED', '').lower() in ('1', 'true', 'yes'):
+            allowed_commands += ",uv"
             
         output_storage_path = str(tempfile.mkdtemp())
         
@@ -266,12 +289,13 @@ class BaseCommandServerIntegrationTest(ABC):
         async for session in self.new_mcp_client_session(
             allowed_commands=allowed_commands,
             output_storage_path=output_storage_path,
+            process_manager_type=process_manager_type,
             process_retention_seconds=None
         ):
             yield session
 
     @pytest_asyncio.fixture(scope="function")
-    async def mcp_client_session_with_5_seconds_retention(self) -> AsyncGenerator[ClientSession, None]:
+    async def mcp_client_session_with_5_seconds_retention(self, process_manager_type: str) -> AsyncGenerator[ClientSession, None]:
         """
         Pytest fixture to start and manage the lifecycle of the MCP command server
         with 10 seconds process retention time for testing retention logic.
@@ -287,6 +311,7 @@ class BaseCommandServerIntegrationTest(ABC):
         async for session in self.new_mcp_client_session(
             allowed_commands=allowed_commands,
             output_storage_path=output_storage_path,
+            process_manager_type=process_manager_type,
             process_retention_seconds=5
         ):
             yield session
@@ -778,6 +803,138 @@ class BaseCommandServerIntegrationTest(ABC):
                 print("Note: This is a known MCP protocol issue. Core npm functionality works (see unit tests).", file=sys.stderr)
                 raise
 
+    @pytest.mark.asyncio
+    async def test_command_execute_uv_optional(self, mcp_client_session: ClientSession, tmp_path):
+        """可选集成测试：验证通过 MCP command_execute 运行 uv --version - 需要设置环境变量 TEST_UV_ENABLED=1 启用"""
+        import os
+        import re
+        
+        if not os.environ.get('TEST_UV_ENABLED', '').lower() in ('1', 'true', 'yes'):
+            pytest.skip("UV integration test is disabled. Set TEST_UV_ENABLED=1 to enable this test.")
+        
+        print("Running test_command_execute_uv_optional...", file=sys.stderr)
+        
+        try:
+            msg="你好！"
+            result = await self.call_tool(
+                mcp_client_session,
+                "command_execute",
+                {
+                    "command": "uv",
+                    "args": ["run", "python", "-c", f"print('{msg}')"],
+                    "directory": str(tmp_path),
+                    "stdin": None,
+                    "timeout": 15,
+                    "envs": None,
+                    "limit_lines": 500,
+                }
+            )
+
+            assert isinstance(result, (list, tuple)), f"Expected list/tuple result, got {type(result)}"
+            assert len(result) == 3, f"Expected 3 result items, got {len(result)}" # uv run outputs stdout, stderr with exit code
+            assert isinstance(result[0], TextContent), f"Expected TextContent, got {type(result[0])}"
+            assert isinstance(result[1], TextContent), f"Expected TextContent, got {type(result[1])}"
+            assert isinstance(result[2], TextContent), f"Expected TextContent, got {type(result[2])}"
+            
+            # Check exit code
+            assert result[0].text.strip() == "**exit with 0**", f"Expected exit code 0, got {result[0].text.strip()}"
+
+            # Check stdout for the printed message
+            stdout_text = result[1].text.strip()
+            assert stdout_text.startswith("---\nstdout:\n---"), f"Stdout format incorrect: {stdout_text}"
+            stdout_content = stdout_text[len("---\nstdout:\n---"):].strip()
+            assert stdout_content == msg, f"Expected stdout to be '{msg}', but got '{stdout_content}'"
+            
+            # Check stderr format (uv might output some info here, but we don't strictly validate content)
+            stderr_text = result[2].text.strip()
+            assert stderr_text.startswith("---\nstderr:\n---"), f"Stderr format incorrect: {stderr_text}"
+            # Stderr content might be empty or contain uv version/info, so we don't validate specific content
+            
+            print(f"[OK] UV command via MCP executed successfully. Stdout: {stdout_content}", file=sys.stderr)
+            print("✅ Integration uv command execute test passed", file=sys.stderr)
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "not found" in error_msg or "command execution failed" in error_msg:
+                pytest.skip(f"uv not found in PATH. Please install uv to run this test. Error: {e}")
+            else:
+                print(f"❌ uv integration test failed with error: {e}", file=sys.stderr)
+                print(f"Error type: {type(e)}", file=sys.stderr)
+                raise
+
+    @pytest.mark.asyncio
+    async def test_command_execute_node_optional(self, mcp_client_session: ClientSession, tmp_path):
+        """
+        Optional integration test: validate running `node -e "console.log(...)"` via MCP command_execute.
+        Requires TEST_NODE_ENABLED=1 environment variable to be set.
+        This test helps diagnose if issues with non-ASCII characters are specific to an executable (like uv)
+        or more general.
+        """
+        import os
+        import re
+        
+        if not os.environ.get('TEST_NODE_ENABLED', '').lower() in ('1', 'true', 'yes'):
+            pytest.skip("Node.js integration test is disabled. Set TEST_NODE_ENABLED=1 to enable this test.")
+        
+        print("Running test_command_execute_node_optional...", file=sys.stderr)
+        
+        try:
+            msg = "你好！"
+            # Using single quotes for the outer shell, and double for JSON inside console.log is safer
+            node_command = f"console.log('{msg}')"
+            result = await self.call_tool(
+                mcp_client_session,
+                "command_execute",
+                {
+                    "command": "node",
+                    "args": ["-e", node_command],
+                    "directory": str(tmp_path),
+                    "stdin": None,
+                    "timeout": 15,
+                    "envs": None,
+                    "limit_lines": 500,
+                }
+            )
+
+            assert isinstance(result, (list, tuple)), f"Expected list/tuple result, got {type(result)}"
+            assert len(result) > 0, "Expected at least one result item"
+            
+            # Successful execution should yield 3 items. Failure might yield 1.
+            if result[0].text.strip().startswith('**exit with'):
+                assert len(result) == 3, f"Expected 3 result items for a completed process, got {len(result)}"
+                assert isinstance(result[0], TextContent)
+                assert isinstance(result[1], TextContent)
+                assert isinstance(result[2], TextContent)
+                
+                # Check exit code
+                assert result[0].text.strip() == "**exit with 0**", f"Expected exit code 0, got {result[0].text.strip()}"
+
+                # Check stdout for the printed message
+                stdout_text = result[1].text.strip()
+                assert stdout_text.startswith("---\nstdout:\n---"), f"Stdout format incorrect: {stdout_text}"
+                stdout_content = stdout_text[len("---\nstdout:\n---"):].strip()
+                assert stdout_content == msg, f"Expected stdout to be '{msg}', but got '{stdout_content}'"
+                
+                print(f"[OK] Node.js command via MCP executed successfully. Stdout: {stdout_content}", file=sys.stderr)
+                print("✅ Integration node command execute test passed", file=sys.stderr)
+            else:
+                # Handle case where command failed to start, returning a single error message
+                assert len(result) == 1
+                assert isinstance(result[0], TextContent)
+                error_text = result[0].text
+                if "command execution failed" in error_text.lower() or "not found" in error_text.lower():
+                    pytest.skip(f"node not found or failed to execute. Please install Node.js to run this test. Error: {error_text}")
+                else:
+                    assert False, f"Test failed unexpectedly with: {error_text}"
+
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "not found" in error_msg or "command execution failed" in error_msg:
+                pytest.skip(f"node not found in PATH. Please install Node.js to run this test. Error: {e}")
+            else:
+                print(f"❌ node integration test failed with error: {e}", file=sys.stderr)
+                print(f"Error type: {type(e)}", file=sys.stderr)
+                raise
 
 class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
     """Integration tests for the MCP Command Server via STDIO protocol."""
@@ -785,6 +942,7 @@ class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
     async def new_mcp_client_session(self, 
                                      allowed_commands: str,
                                      output_storage_path: str,
+                                     process_manager_type: str,
                                      process_retention_seconds: Optional[int] = None) -> AsyncGenerator[ClientSession, None]:
         """
         Factory method to create MCP client session for STDIO mode.
@@ -794,11 +952,14 @@ class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
         
         # Set up environment variables for the command server
         env = os.environ.copy()
+        env["PROCESS_MANAGER_TYPE"] = process_manager_type
         env["ALLOWED_COMMANDS"] = allowed_commands
         env["OUTPUT_STORAGE_PATH"] = output_storage_path
         if process_retention_seconds is not None:
             env["PROCESS_RETENTION_SECONDS"] = str(process_retention_seconds)
+        env["PYTHONIOENCODING"] = "utf-8"
         
+
         cmd, args = _get_server_start_params(
             server_type="command",
             mode="stdio",
@@ -900,6 +1061,7 @@ class TestCommandServerSSEIntegration(BaseCommandServerIntegrationTest):
     async def new_mcp_client_session(self, 
                                      allowed_commands: str,
                                      output_storage_path: str,
+                                     process_manager_type: str,
                                      process_retention_seconds: Optional[int] = None) -> AsyncGenerator[ClientSession, None]:
         """
         Factory method to create MCP client session for SSE mode.
@@ -910,6 +1072,7 @@ class TestCommandServerSSEIntegration(BaseCommandServerIntegrationTest):
         
         # Set up environment variables for the command server
         env = os.environ.copy()
+        env["PROCESS_MANAGER_TYPE"] = process_manager_type
         env["ALLOWED_COMMANDS"] = allowed_commands
         env["OUTPUT_STORAGE_PATH"] = output_storage_path
         if process_retention_seconds is not None:
@@ -1055,6 +1218,7 @@ class TestCommandServerStreamableHttpIntegration(BaseCommandServerIntegrationTes
     async def new_mcp_client_session(self, 
                                      allowed_commands: str,
                                      output_storage_path: str,
+                                     process_manager_type: str,
                                      process_retention_seconds: Optional[int] = None) -> AsyncGenerator[ClientSession, None]:
         """
         Factory method to create MCP client session for Streamable HTTP mode.
@@ -1065,6 +1229,7 @@ class TestCommandServerStreamableHttpIntegration(BaseCommandServerIntegrationTes
         
         # Set up environment variables for the command server
         env = os.environ.copy()
+        env["PROCESS_MANAGER_TYPE"] = process_manager_type
         env["ALLOWED_COMMANDS"] = allowed_commands
         env["OUTPUT_STORAGE_PATH"] = output_storage_path
         if process_retention_seconds is not None:

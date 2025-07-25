@@ -63,6 +63,7 @@ def define_mcp_server(
         allowed_commands: List[str],
         default_encoding: str,
         command_default_encoding_map: Dict[str, str],
+        default_timeout: int,
         # TODO: add other options if needed
     ) -> None:
     """
@@ -73,6 +74,7 @@ def define_mcp_server(
         command_executor: The command executor instance.
         allowed_commands: A list of commands that are allowed to be executed.
         default_encoding: The default encoding for the command output.
+        default_timeout: The default timeout for command execution.
     """
 
     logger.info("Allowed commands: %s", allowed_commands)
@@ -92,7 +94,7 @@ def define_mcp_server(
         args: Optional[List[str]] = Field(None, description="The arguments for the command."),
         directory: str = Field(description="The working directory (absolute path) for the command."),
         stdin: Optional[str] = Field(None, description="Input to pass to the command via stdin."),
-        timeout: float = Field(15, description="Maximum execution time in seconds."),
+        timeout: float = Field(default_timeout, description="Maximum execution time in seconds."),
         envs: Optional[Dict[str, str]] = Field(None, description="Additional environment variables for the command."),
         encoding: str = Field(default_encoding, description="Character encoding for the command output (e.g., 'utf-8', 'gbk', 'cp936')."),
         limit_lines: float = Field(500, description="Maximum number of lines to return in each TextContent.",gt=0)
@@ -114,7 +116,7 @@ def define_mcp_server(
             result = await command_executor.execute_command(
                 command=[command] + (args or []),
                 directory=directory,
-                stdin_data=stdin.encode() if stdin else None,
+                stdin_data=stdin,
                 timeout=timeout_int,
                 envs=envs,
                 encoding=effective_encoding,
@@ -153,7 +155,7 @@ def define_mcp_server(
         stdin: Optional[str] = Field(None, description="Input to pass to the command via stdin."),
         envs: Optional[Dict[str, str]] = Field(None, description="Additional environment variables for the command."),
         encoding: str = Field(default_encoding, description="Character encoding for the command output."),
-        timeout: float = Field(15, description="Maximum execution time in seconds.")
+        timeout: float = Field(default_timeout, description="Maximum execution time in seconds.")
     ) -> Sequence[TextContent]:
         """
         Starts a background process for a single command and provides fine-grained management.
@@ -171,7 +173,7 @@ def define_mcp_server(
                 command=[command] + (args or []),
                 directory=directory,
                 description=description,
-                stdin_data=stdin.encode() if stdin else None,
+                stdin_data=stdin,
                 timeout=timeout_int,
                 envs=envs,
                 encoding=effective_encoding,

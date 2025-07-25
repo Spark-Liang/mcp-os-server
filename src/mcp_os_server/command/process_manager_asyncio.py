@@ -5,7 +5,6 @@ import logging
 import os
 import sys
 import time
-import uuid
 import shutil
 import random
 import string
@@ -31,8 +30,7 @@ from .interfaces import (
 
 logger = logging.getLogger(__name__)
 
-
-class Process(IProcess):
+class AsyncioBaseProcess(IProcess):
     _info: ProcessInfo
     _process: asyncio.subprocess.Process
     _output_manager: IOutputManager
@@ -145,11 +143,11 @@ class Process(IProcess):
         return "Success"
 
 
-class ProcessManager(IProcessManager):
+class AsyncioBaseProcessManager(IProcessManager):
     def __init__(self, output_manager: IOutputManager, process_retention_seconds: int = 3600):
         self._output_manager = output_manager
         self._process_retention_seconds = process_retention_seconds
-        self._processes: Dict[str, Process] = {}
+        self._processes: Dict[str, AsyncioBaseProcess] = {}
         self._cleanup_handles: Dict[str, asyncio.Handle] = {}
         self._main_loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -425,7 +423,6 @@ class ProcessManager(IProcessManager):
                 # This can happen if the process exits quickly before stdin is fully written.
                 pass
 
-
         info = ProcessInfo(
             pid=process_id,
             command=original_command,  # Store the original command for display
@@ -438,21 +435,27 @@ class ProcessManager(IProcessManager):
             error_message=None,
             timeout=timeout,
             labels=labels or [],
+            envs=process_envs,  # Add the missing envs field
         )
+
+        # Ensure timeout and encoding are non-Optional for _monitor_process
+        # Use sys.maxsize for effectively infinite timeout if None is provided
+        effective_timeout = timeout if timeout is not None else sys.maxsize
+        effective_encoding = encoding if encoding is not None else (sys.getdefaultencoding() or 'utf-8')
 
         # 使用主事件循环创建带名称的监控任务
         if self._main_loop and not self._main_loop.is_closed():
             monitor_task = self._main_loop.create_task(
-                self._monitor_process(process_id, process, timeout, encoding),
+                self._monitor_process(process_id, process, effective_timeout, effective_encoding),
                 name=f"monitor_process_{process_id}"
             )
         else:
             monitor_task = asyncio.create_task(
-                self._monitor_process(process_id, process, timeout, encoding),
+                self._monitor_process(process_id, process, effective_timeout, effective_encoding),
                 name=f"monitor_process_{process_id}"
             )
         
-        process_obj = Process(process, info, self._output_manager, monitor_task)
+        process_obj = AsyncioBaseProcess(process, info, self._output_manager, monitor_task)
         self._processes[process_id] = process_obj
         
         # Store a message to ensure log directory is created
@@ -473,12 +476,11 @@ class ProcessManager(IProcessManager):
                 if retry_count >= 10:
                     raise Exception("Failed to generate a unique PID after 10 retries.")
 
-    async def _monitor_process(self, process_id: str, process: asyncio.subprocess.Process, timeout: Optional[int], encoding: Optional[str]):
+    async def _monitor_process(self, process_id: str, process: asyncio.subprocess.Process, timeout: int, encoding: str):
         proc_obj = self._processes[process_id]
         info = proc_obj._info
         
-        # Default to system's encoding or fallback to utf-8
-        output_encoding = encoding or sys.getdefaultencoding() or 'utf-8'
+        output_encoding = encoding # encoding is now guaranteed to be a string
 
         async def read_stream(stream: Optional[asyncio.StreamReader], output_key: str):
             if not stream:
@@ -676,3 +678,6 @@ class ProcessManager(IProcessManager):
             else:
                 results[process_id] = "Not found"
         return results 
+
+# endregion
+

@@ -259,7 +259,7 @@ class IProcessManager(Protocol):
                             command: List[str],
                             directory: str,
                             description: str,
-                            stdin_data: Optional[bytes] = None,
+                            stdin_data: Optional[bytes | str] = None,
                             timeout: Optional[int] = None,
                             envs: Optional[Dict[str, str]] = None,
                             encoding: Optional[str] = None,
@@ -271,7 +271,9 @@ class IProcessManager(Protocol):
             command (List[str]): The command and its arguments to execute.
             directory (str): The working directory for the command execution.
             description (str): A description of the process.
-            stdin_data (Optional[bytes]): Input byte data to pass to the command via stdin.
+            stdin_data (Optional[bytes | str]): Input byte data to pass to the command via stdin. 
+                If stdin_data is a string, it will be encoded to bytes using the encoding parameter.
+                If stdin_data is bytes, it will be passed to the command via stdin.
             timeout (Optional[int]): Maximum execution time in seconds.
             envs (Optional[Dict[str, str]]): Additional environment variables for the command.
             encoding (Optional[str]): Character encoding for the command's output.
@@ -338,7 +340,7 @@ class IProcessManager(Protocol):
         """
         ...
 
-    async def clean_processes(self, process_ids: List[str]) -> Dict[str, str]:
+    async def clean_processes(self, process_ids: List[str]) -> Dict[str, Optional[str]]:
         """
         Cleans up completed or failed background processes.
 
@@ -400,21 +402,25 @@ class ICommandExecutor(Protocol):
         """
         ...
 
-    async def execute_command(self,
-                              command: List[str],
-                              directory: str,
-                              stdin_data: Optional[bytes] = None,
-                              timeout: Optional[int] = None,
-                              envs: Optional[Dict[str, str]] = None,
-                              encoding: Optional[str] = None,
-                              limit_lines: Optional[int] = None) -> CommandResult:
+    async def execute_command(
+        self,
+        command: List[str],
+        directory: str,
+        stdin_data: Optional[bytes | str] = None,
+        timeout: Optional[int] = None,
+        envs: Optional[Dict[str, str]] = None,
+        encoding: Optional[str] = None,
+        limit_lines: Optional[int] = None
+    ) -> CommandResult:
         """
         Synchronously executes a single command and waits for it to complete.
 
         Args:
             command (List[str]): The command and its arguments to execute.
             directory (str): The working directory for the command execution.
-            stdin_data (Optional[bytes]): Input byte data to pass to the command via stdin.
+            stdin_data (Optional[bytes | str]): Input byte data to pass to the command via stdin.
+                If stdin_data is a string, it will be encoded to bytes using the encoding parameter.
+                If stdin_data is bytes, it will be passed to the command via stdin.
             timeout (Optional[int]): Maximum execution time in seconds.
             envs (Optional[Dict[str, str]]): Additional environment variables for the command.
             encoding (Optional[str]): Character encoding for the command's output.
@@ -432,15 +438,17 @@ class ICommandExecutor(Protocol):
         """
         ...
 
-    async def start_background_command(self,
-                                       command: List[str],
-                                       directory: str,
-                                       description: str,
-                                       stdin_data: Optional[bytes] = None,
-                                       timeout: Optional[int] = None,
-                                       envs: Optional[Dict[str, str]] = None,
-                                       encoding: Optional[str] = None,
-                                       labels: Optional[List[str]] = None) -> IProcess:
+    async def start_background_command(
+        self,
+        command: List[str],
+        directory: str,
+        description: str,
+        stdin_data: Optional[bytes | str] = None,
+        timeout: Optional[int] = None,
+        envs: Optional[Dict[str, str]] = None,
+        encoding: Optional[str] = None,
+        labels: Optional[List[str]] = None
+    ) -> IProcess:
         """
         Starts a background command.
 
@@ -448,7 +456,9 @@ class ICommandExecutor(Protocol):
             command (List[str]): The command and its arguments to execute.
             directory (str): The working directory for the command execution.
             description (str): A description of the process.
-            stdin_data (Optional[bytes]): Input byte data to pass to the command via stdin.
+            stdin_data (Optional[bytes | str]): Input byte data to pass to the command via stdin.
+                If stdin_data is a string, it will be encoded to bytes using the encoding parameter.
+                If stdin_data is bytes, it will be passed to the command via stdin.
             timeout (Optional[int]): Maximum execution time in seconds.
             envs (Optional[Dict[str, str]]): Additional environment variables for the command.
             encoding (Optional[str]): Character encoding for the command's output.
@@ -464,12 +474,14 @@ class ICommandExecutor(Protocol):
         """
         ...
 
-    async def get_process_logs(self,
-                                          process_id: str,
-                                          output_key: str,
-                                          since: Optional[float] = None,
-                                          until: Optional[float] = None,
-                                          tail: Optional[int] = None) -> AsyncGenerator[OutputMessageEntry, None]:
+    async def get_process_logs(
+        self,
+        process_id: str,
+        output_key: str,
+        since: Optional[float] = None,
+        until: Optional[float] = None,
+        tail: Optional[int] = None
+    ) -> AsyncGenerator[OutputMessageEntry, None]:
         """
         Retrieves the output stream of a background command.
 
@@ -490,7 +502,12 @@ class ICommandExecutor(Protocol):
         """
         ...
 
-    async def stop_process(self, process_id: str, force: bool = False, reason: Optional[str] = None) -> None:
+    async def stop_process(
+        self, 
+        process_id: str, 
+        force: bool = False, 
+        reason: Optional[str] = None
+    ) -> None:
         """
         Stops a background command.
 
@@ -506,9 +523,12 @@ class ICommandExecutor(Protocol):
         """
         ...
 
-    async def list_process(self,
-                                       status: Optional[ProcessStatus] = None,
-                                       labels: Optional[List[str]] = None) -> List[ProcessInfo]:
+    async def list_process(
+            self,
+            status: Optional[ProcessStatus] = None,
+            labels: Optional[List[str]] = None,
+            limit: Optional[int] = None
+        ) -> List[ProcessInfo]:
         """
         Lists background commands.
 
@@ -596,11 +616,13 @@ class IWebManager(Protocol):
         """
         ...
 
-    async def start_web_interface(self,
-                                  host: str = "0.0.0.0",
-                                  port: Optional[int] = None,
-                                  debug: bool = False,
-                                  url_prefix: str = "") -> None:
+    async def start_web_interface(
+            self,
+            host: str = "0.0.0.0",
+            port: Optional[int] = None,
+            debug: bool = False,
+            url_prefix: str = ""
+        ) -> None:
         """
         Starts the web interface.
 

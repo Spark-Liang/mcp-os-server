@@ -3,7 +3,8 @@ This module defines the Pydantic data models for the MCP Command Server.
 """
 import enum
 from datetime import datetime
-from typing import List, Optional
+from typing import Optional, Sequence
+from collections.abc import Mapping
 
 from pydantic import BaseModel, Field
 
@@ -41,14 +42,15 @@ class ProcessInfo(BaseModel):
     Detailed information about a process.
     """
     pid: str = Field(..., description="Unique identifier for the process")
-    command: List[str] = Field(..., description="The command and its arguments")
+    command: Sequence[str] = Field(..., description="The command and its arguments")
     directory: str = Field(..., description="Working directory for the command execution")
+    envs: Mapping[str, str] = Field(..., description="Environment variables for the process")
     description: str = Field(..., description="Description of the process")
     status: ProcessStatus = Field(..., description="Current status of the process")
     start_time: datetime = Field(..., description="Start time of the process")
     end_time: Optional[datetime] = Field(None, description="End time of the process")
     exit_code: Optional[int] = Field(None, description="Exit code of the process")
-    labels: List[str] = Field([], description="List of labels for process classification")
+    labels: Sequence[str] = Field([], description="List of labels for process classification")
     timeout: Optional[int] = Field(None, description="Maximum execution time in seconds")
     error_message: Optional[str] = Field(None, description="Error message encountered by the process")
 

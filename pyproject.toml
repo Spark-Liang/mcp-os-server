@@ -32,6 +32,7 @@ test = [
     "pytest-mock>=3.12.0",
     "pytest-timeout>=2.4.0",
     "psutil>=7.0.0",
+    "httpx>=0.28.1",
 ]
 dev = [
     "ruff>=0.0.262",
@@ -152,10 +153,3 @@ omit = [
     "src/mcp_os_server/__init__.py",
     "src/mcp_os_server/version.py",
 ]
-
-[dependency-groups]
-dev = [
-    "httpx>=0.28.1",
-]
-
-

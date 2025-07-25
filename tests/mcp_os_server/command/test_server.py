@@ -18,12 +18,12 @@ from mcp_os_server.command.command_executor import CommandExecutor
 from mcp_os_server.command.exceptions import ProcessNotFoundError
 from mcp_os_server.command.models import ProcessStatus
 from mcp_os_server.command.output_manager import OutputManager
-from mcp_os_server.command.process_manager import ProcessManager
+from mcp_os_server.command.interfaces import IProcessManager
+from mcp_os_server.command.process_manager_asyncio import AsyncioBaseProcessManager
+from mcp_os_server.command.process_manager_subprocess import SubprocessBaseProcessManager
 from mcp_os_server.command.server import define_mcp_server
 
-
-# Path to the helper script
-CMD_SCRIPT_PATH = Path(__file__).parent / "cmd_for_test.py"
+from .integration_test_utils import CMD_SCRIPT_PATH, command_exists
 
 
 # Helper functions for validating output formats according to FDS specifications
@@ -185,16 +185,16 @@ async def output_manager(tmp_path: Path) -> AsyncGenerator[OutputManager, None]:
 
 
 @pytest_asyncio.fixture
-async def process_manager(output_manager: OutputManager) -> AsyncGenerator[ProcessManager, None]:
+async def process_manager(output_manager: OutputManager) -> AsyncGenerator[IProcessManager, None]:
     """Provides a function-scoped ProcessManager instance."""
-    manager = ProcessManager(output_manager=output_manager, process_retention_seconds=5)
+    manager = AsyncioBaseProcessManager(output_manager=output_manager, process_retention_seconds=5)
     await manager.initialize()
     yield manager
     await manager.shutdown()
 
 
 @pytest_asyncio.fixture
-async def command_executor(process_manager: ProcessManager) -> AsyncGenerator[CommandExecutor, None]:
+async def command_executor(process_manager: IProcessManager) -> AsyncGenerator[CommandExecutor, None]:
     """Fixture to create a real CommandExecutor instance."""
     executor = CommandExecutor(process_manager=process_manager)
     await executor.initialize()
@@ -215,7 +215,8 @@ def mcp_server(command_executor: CommandExecutor) -> FastMCP:
         command_executor,
         allowed_commands=[sys.executable, "python", "echo", "sleep", "exit", "grep", "nonexistent-command-12345"],  # Include all commands needed for tests
         default_encoding="utf-8",
-        command_default_encoding_map={}
+        command_default_encoding_map={},
+        default_timeout=15
     )
     return mcp
 
@@ -1041,7 +1042,8 @@ class TestMCPServerConfigurationParameters:
             command_executor,
             allowed_commands=[sys.executable],  # Only allow the actual python executable
             default_encoding="utf-8",
-            command_default_encoding_map={}
+            command_default_encoding_map={},
+            default_timeout=15
         )
         return mcp
 
@@ -1058,7 +1060,8 @@ class TestMCPServerConfigurationParameters:
             command_executor,
             allowed_commands=[sys.executable, "echo", "sleep"],
             default_encoding="gbk",  # Different default encoding
-            command_default_encoding_map={}
+            command_default_encoding_map={},
+            default_timeout=15
         )
         return mcp
 

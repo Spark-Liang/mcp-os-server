@@ -26,11 +26,11 @@ from mcp.types import ResourceTemplate as MCPResourceTemplate
 
 from .command.command_executor import CommandExecutor
 from .command.output_manager import OutputManager
-from .command.process_manager import ProcessManager
+from .command.process_manager_asyncio import AsyncioBaseProcessManager
+from .command.process_manager_subprocess import SubprocessBaseProcessManager
 from .command.web_manager import WebManager
 from .filesystem.server import create_server as create_filesystem_server
 from .filtered_fast_mcp import FilteredFastMCP
-
 
 
 
@@ -48,15 +48,16 @@ def setup_logger(mode: str) -> logging.Logger:
         # Still output to stderr to avoid stdout interference
         stream = sys.stderr
     else:
-        # In other modes, use normal INFO level
-        logger.setLevel(logging.INFO)
         stream = sys.stdout
     
     handler = logging.StreamHandler(stream)
-    formatter = logging.Formatter('%(message)s')
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     
+    logger.info(f"sys.getdefaultencoding(): {sys.getdefaultencoding()}")
+    logger.info(f"sys.getfilesystemencoding(): {sys.getfilesystemencoding()}")
+
     return logger
 
 
@@ -96,6 +97,38 @@ def parse_command_default_encoding_map() -> Dict[str, str]:
     return command_encoding_map
 
 
+def parse_filesystem_service_features():
+    """Parse the FILESYSTEM_SERVICE_FEATURES environment variable."""
+    from .filesystem.models import FileSystemServiceFeature
+    
+    features_str = os.getenv("FILESYSTEM_SERVICE_FEATURES", "")
+    if not features_str:
+        return []
+    
+    # Split by comma and strip whitespace
+    feature_names = [name.strip() for name in features_str.split(",")]
+    # Filter out empty strings
+    feature_names = [name for name in feature_names if name]
+    
+    features = []
+    for feature_name in feature_names:
+        try:
+            # Try to match feature name to enum value
+            for feature in FileSystemServiceFeature:
+                if feature.value == feature_name or feature.name == feature_name:
+                    features.append(feature)
+                    break
+            else:
+                # If no match found, log a warning
+                logger = logging.getLogger("mcp_os_server")
+                logger.warning(f"Unknown filesystem service feature: {feature_name}")
+        except Exception as e:
+            logger = logging.getLogger("mcp_os_server")
+            logger.error(f"Error parsing filesystem service feature '{feature_name}': {e}")
+    
+    return features
+
+
 
 
 
@@ -116,11 +149,22 @@ async def create_command_executor(
     # Create OutputManager
     output_manager = OutputManager(output_storage_path=Path(output_storage_path).absolute().as_posix())
     
-    # Create ProcessManager
-    process_manager = ProcessManager(
-        output_manager=output_manager,
-        process_retention_seconds=process_retention_seconds
-    )
+    # Determine which ProcessManager implementation to use
+    process_manager_type = os.getenv("PROCESS_MANAGER_TYPE", "asyncio").lower()
+    logger = logging.getLogger("mcp_os_server")
+    
+    if process_manager_type == "subprocess":
+        logger.info("Using SubprocessBaseProcessManager")
+        process_manager = SubprocessBaseProcessManager(
+            output_manager=output_manager,
+            process_retention_seconds=process_retention_seconds
+        )
+    else: # Default to asyncio
+        logger.info("Using ProcessManager (asyncio)")
+        process_manager = AsyncioBaseProcessManager(
+            output_manager=output_manager,
+            process_retention_seconds=process_retention_seconds
+        )
     
     # Create CommandExecutor
     command_executor = CommandExecutor(
@@ -156,6 +200,7 @@ async def _run_filesystem_server(
     # Parse environment variables
     allowed_dirs_str = os.getenv("ALLOWED_DIRS", "")
     allowed_dirs = parse_allowed_directories(allowed_dirs_str)
+    filesystem_service_features = parse_filesystem_service_features()
     
     if not allowed_dirs:
         logger.error("Warning: No directories are allowed. Set ALLOWED_DIRS environment variable.")
@@ -165,10 +210,12 @@ async def _run_filesystem_server(
     # Only output initialization info in non-stdio modes
     logger.info("Starting MCP Filesystem Server in %s mode...", mode)
     logger.info("Allowed directories: %s", ', '.join(allowed_dirs))
+    if filesystem_service_features:
+        logger.info("Filesystem service features: %s", ', '.join([f.name for f in filesystem_service_features]))
     
     # Create filesystem server
     try:
-        mcp = create_filesystem_server(allowed_dirs, host=host, port=port)
+        mcp = create_filesystem_server(allowed_dirs, features=filesystem_service_features, host=host, port=port)
     except Exception as e:
         logger.error("Failed to initialize filesystem server: %s", e, exc_info=True)
         return
@@ -220,6 +267,7 @@ async def _run_unified_server(
     # Parse environment variables for filesystem server
     allowed_dirs_str = os.getenv("ALLOWED_DIRS", "")
     allowed_dirs = parse_allowed_directories(allowed_dirs_str)
+    filesystem_service_features = parse_filesystem_service_features()
     
     if not allowed_commands and not allowed_dirs:
         logger.error("Warning: Neither commands nor directories are allowed.")
@@ -250,11 +298,14 @@ async def _run_unified_server(
             logger.info("Command-specific encodings: %s", command_default_encoding_map)
     if allowed_dirs:
         logger.info("Allowed directories: %s", ', '.join(allowed_dirs))
+    if filesystem_service_features:
+        logger.info("Filesystem service features: %s", ', '.join([f.name for f in filesystem_service_features]))
     
     # Create CommandExecutor if commands are allowed
     command_executor = None
     if allowed_commands:
         try:
+            default_timeout = int(os.getenv("DEFAULT_TIMEOUT", "15"))
             command_executor = await create_command_executor(
                 output_storage_path=output_storage_path,
                 process_retention_seconds=process_retention_seconds,
@@ -292,6 +343,7 @@ async def _run_unified_server(
             allowed_commands=allowed_commands,
             default_encoding=default_encoding,
             command_default_encoding_map=command_default_encoding_map,
+            default_timeout=default_timeout,
         )
     
     # Define filesystem server tools if allowed
@@ -299,7 +351,7 @@ async def _run_unified_server(
         from .filesystem.server import define_mcp_server as define_filesystem_server
         from .filesystem.filesystem_service import FilesystemService
         
-        filesystem_service = FilesystemService(allowed_dirs)
+        filesystem_service = FilesystemService(allowed_dirs, features=filesystem_service_features)
         define_filesystem_server(mcp, filesystem_service)
     
     # Add command_open_web_manager tool if web manager is enabled
@@ -497,6 +549,7 @@ async def _run_command_server(
     
     # Create CommandExecutor
     try:
+        default_timeout = int(os.getenv("DEFAULT_TIMEOUT", "15"))
         command_executor = await create_command_executor(
             output_storage_path=output_storage_path,
             process_retention_seconds=process_retention_seconds,
@@ -533,6 +586,7 @@ async def _run_command_server(
         allowed_commands=allowed_commands,
         default_encoding=default_encoding,
         command_default_encoding_map=command_default_encoding_map,
+        default_timeout=default_timeout,
     )
     
     # Add command_open_web_manager tool if web manager is enabled
@@ -589,7 +643,8 @@ async def _run_command_server(
         try:
             if web_manager:
                 await web_manager.shutdown()
-            await command_executor.shutdown()
+            if command_executor:
+                await command_executor.shutdown()
             if temp_dir_obj:
                 temp_dir_obj.cleanup()
                 logger.info("Cleaned up temporary output storage path: %s", output_storage_path)
