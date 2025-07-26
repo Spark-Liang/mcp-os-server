@@ -4,7 +4,7 @@
 
 ## 功能特点
 
-*   **安全的命令执行**：仅支持 `command + args` 的简单命令格式，不解析或支持复杂的 shell 操作符（如 `|`, `&&`, `||`, `;`）。
+*   **安全的命令执行**：仅支持 `command + args` 的简单命令格式，不解析或支持复杂的 shell 操作符（如 `|`, `&&`, `||`, `;`）。命令作为列表直接执行，不通过shell字符串。
 *   **标准输入支持**：通过stdin向命令传递输入。
 *   **全面的输出信息**：返回stdout、stderr、退出状态和执行时间。
 *   **强大的单个进程管理**：对单个命令的执行生命周期提供精细控制，包括：
@@ -173,8 +173,12 @@ Web界面提供了一种方便的方式来监控和管理后台进程：
     "args": ["-l", "/tmp"],
     "directory": "/path/to/working/directory",
     "stdin": "可选的输入数据",
-    "timeout": 30,
-    "encoding": "utf-8"
+    "timeout": 30.0,
+    "envs": {
+        "KEY": "value"
+    },
+    "encoding": "utf-8",
+    "limit_lines": 500
 }
 ```
 
@@ -195,6 +199,27 @@ Web界面提供了一种方便的方式来监控和管理后台进程：
 }
 ```
 
+**在命令执行超时时，返回4个TextContent：**
+
+```json
+{
+    "type": "text",
+    "text": "**Command timed out with PID: [pid]**"
+},
+{
+    "type": "text",
+    "text": "---\nstdout (partial):\n---\n[partial stdout]\n"
+},
+{
+    "type": "text",
+    "text": "---\nstderr (partial):\n---\n[partial stderr]\n"
+},
+{
+    "type": "text",
+    "text": "**Note: Process [pid] might still be running. Use `command_ps_logs` to view continued output. Or use `timeout` to set a longer timeout.**"
+}
+```
+
 #### 请求参数
 
 | 字段      | 类型       | 必需  | 描述                                      |
@@ -203,7 +228,7 @@ Web界面提供了一种方便的方式来监控和管理后台进程：
 | args     | string[]   | 否   | 命令的参数列表                           |
 | directory| string     | 是   | 命令执行的工作目录                           |
 | stdin    | string     | 否   | 通过stdin传递给命令的输入                    |
-| timeout  | integer    | 否   | 最大执行时间（秒）（默认：15）                 |
+| timeout  | float      | 否   | 最大执行时间（秒）（默认：15）                 |
 | envs     | object     | 否   | 命令的附加环境变量                           |
 | encoding | string     | 否   | 命令输出的字符编码（例如：'utf-8', 'gbk', 'cp936'） |
 | limit_lines | integer | 否   | 每个TextContent返回的最大行数（默认：500）     |
@@ -233,7 +258,7 @@ Web界面提供了一种方便的方式来监控和管理后台进程：
         "NODE_ENV": "development"
     },
     "encoding": "utf-8",
-    "timeout": 3600
+    "timeout": 3600.0
 }
 ```
 
@@ -258,7 +283,7 @@ Web界面提供了一种方便的方式来监控和管理后台进程：
 | stdin      | string     | 否   | 通过stdin传递给命令的输入              |
 | envs       | object     | 否   | 命令的附加环境变量                     |
 | encoding   | string     | 否   | 命令输出的字符编码                     |
-| timeout    | integer    | 否   | 最大执行时间（秒）                     |
+| timeout    | float      | 否   | 最大执行时间（秒）                     |
 
 #### 响应字段
 
