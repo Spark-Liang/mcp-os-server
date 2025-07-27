@@ -5,22 +5,18 @@ This module provides comprehensive tests for the WebManager class,
 testing both web UI and REST API endpoints using real command execution.
 """
 
-import anyio
-import json
-import threading
-import time
 from pathlib import Path
 from typing import AsyncGenerator
 
+import anyio
 import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
 
+from mcp_os_server.command.interfaces import IProcessManager
 from mcp_os_server.command.output_manager import OutputManager
 from mcp_os_server.command.process_manager_anyio import AnyioProcessManager
-from mcp_os_server.command.interfaces import IProcessManager
 from mcp_os_server.command.web_manager import WebManager
-from mcp_os_server.command.models import ProcessStatus
 
 from .integration_test_utils import CMD_SCRIPT_PATH
 
@@ -110,14 +106,16 @@ class TestWebManagerHTTPAPI:
         assert data["count"] == 0
 
     @pytest.mark.anyio
-    async def test_api_get_processes_with_real_process(self, test_client, command_executor, tmp_path):
+    async def test_api_get_processes_with_real_process(
+        self, test_client, command_executor, tmp_path
+    ):
         """Test GET /api/processes endpoint with real running process."""
         # Start a background process
         process = await command_executor.start_process(
             command=["python", str(CMD_SCRIPT_PATH), "echo", "hello world"],
             directory=tmp_path.as_posix(),
             description="Test echo process",
-            labels=["test", "echo"]
+            labels=["test", "echo"],
         )
 
         # Wait a moment for process to be recorded
@@ -147,13 +145,15 @@ class TestWebManagerHTTPAPI:
         await process.wait_for_completion(timeout=10)
 
     @pytest.mark.anyio
-    async def test_api_get_processes_filter_status(self, test_client, command_executor, tmp_path):
+    async def test_api_get_processes_filter_status(
+        self, test_client, command_executor, tmp_path
+    ):
         """Test GET /api/processes with status filter."""
         # Start and complete a process
         process = await command_executor.start_process(
             command=["python", str(CMD_SCRIPT_PATH), "echo", "test"],
             directory=tmp_path.as_posix(),
-            description="Test completed process"
+            description="Test completed process",
         )
         await process.wait_for_completion(timeout=10)
 
@@ -166,14 +166,16 @@ class TestWebManagerHTTPAPI:
         assert all(proc["status"] == "completed" for proc in data["data"])
 
     @pytest.mark.anyio
-    async def test_api_get_processes_filter_labels(self, test_client, command_executor, tmp_path):
+    async def test_api_get_processes_filter_labels(
+        self, test_client, command_executor, tmp_path
+    ):
         """Test GET /api/processes with labels filter."""
         # Start process with specific labels
         process = await command_executor.start_process(
             command=["python", str(CMD_SCRIPT_PATH), "echo", "test"],
             directory=tmp_path.as_posix(),
             description="Test labeled process",
-            labels=["test", "specific"]
+            labels=["test", "specific"],
         )
         await process.wait_for_completion(timeout=10)
 
@@ -190,13 +192,15 @@ class TestWebManagerHTTPAPI:
             assert any(label in proc_labels for label in ["test", "specific"])
 
     @pytest.mark.anyio
-    async def test_api_get_process_detail_success(self, test_client, command_executor, tmp_path):
+    async def test_api_get_process_detail_success(
+        self, test_client, command_executor, tmp_path
+    ):
         """Test GET /api/processes/<id> endpoint."""
         # Start a process
         process = await command_executor.start_process(
             command=["python", str(CMD_SCRIPT_PATH), "echo", "detail test"],
             directory=tmp_path.as_posix(),
-            description="Test process detail"
+            description="Test process detail",
         )
         await process.wait_for_completion(timeout=10)
 
@@ -219,13 +223,15 @@ class TestWebManagerHTTPAPI:
         assert "not found" in data["detail"].lower()
 
     @pytest.mark.anyio
-    async def test_api_get_process_output_success(self, test_client, command_executor, tmp_path):
+    async def test_api_get_process_output_success(
+        self, test_client, command_executor, tmp_path
+    ):
         """Test GET /api/processes/<id>/output endpoint."""
         # Start a process that produces output
         process = await command_executor.start_process(
             command=["python", str(CMD_SCRIPT_PATH), "echo", "output test"],
             directory=tmp_path.as_posix(),
-            description="Test process output"
+            description="Test process output",
         )
         await process.wait_for_completion(timeout=10)
 
@@ -240,16 +246,20 @@ class TestWebManagerHTTPAPI:
 
         # Should have some stdout output
         if data["data"]["stdout"]:
-            assert any("output test" in entry["content"] for entry in data["data"]["stdout"])
+            assert any(
+                "output test" in entry["content"] for entry in data["data"]["stdout"]
+            )
 
     @pytest.mark.anyio
-    async def test_api_get_process_output_with_params(self, test_client, command_executor, tmp_path):
+    async def test_api_get_process_output_with_params(
+        self, test_client, command_executor, tmp_path
+    ):
         """Test GET /api/processes/<id>/output with parameters."""
         # Start a process with multiple output lines
         process = await command_executor.start_process(
             command=["python", str(CMD_SCRIPT_PATH), "multiline"],
             directory=tmp_path.as_posix(),
-            description="Test multiline output"
+            description="Test multiline output",
         )
         await process.wait_for_completion(timeout=10)
 
@@ -272,20 +282,24 @@ class TestWebManagerHTTPAPI:
         assert response.status_code == 404
 
     @pytest.mark.anyio
-    async def test_api_stop_process_success(self, test_client, command_executor, tmp_path):
+    async def test_api_stop_process_success(
+        self, test_client, command_executor, tmp_path
+    ):
         """Test POST /api/processes/<id>/stop endpoint."""
         # Start a long-running process
         process = await command_executor.start_process(
             command=["python", str(CMD_SCRIPT_PATH), "sleep", "10"],
             directory=tmp_path.as_posix(),
-            description="Test stop process"
+            description="Test stop process",
         )
 
         # Give it time to start
         await anyio.sleep(0.1)
 
         # Stop the process via API
-        response = test_client.post(f"/api/processes/{process.pid}/stop", json={"force": False})
+        response = test_client.post(
+            f"/api/processes/{process.pid}/stop", json={"force": False}
+        )
 
         assert response.status_code == 200
         data = response.json()
@@ -294,20 +308,24 @@ class TestWebManagerHTTPAPI:
         assert data["data"]["action"] == "stop"
 
     @pytest.mark.anyio
-    async def test_api_stop_process_force(self, test_client, command_executor, tmp_path):
+    async def test_api_stop_process_force(
+        self, test_client, command_executor, tmp_path
+    ):
         """Test POST /api/processes/<id>/stop with force."""
         # Start a long-running process
         process = await command_executor.start_process(
             command=["python", str(CMD_SCRIPT_PATH), "sleep", "10"],
             directory=tmp_path.as_posix(),
-            description="Test force stop process"
+            description="Test force stop process",
         )
 
         # Give it time to start
         await anyio.sleep(0.1)
 
         # Force stop the process via API
-        response = test_client.post(f"/api/processes/{process.pid}/stop", json={"force": True})
+        response = test_client.post(
+            f"/api/processes/{process.pid}/stop", json={"force": True}
+        )
 
         assert response.status_code == 200
         data = response.json()
@@ -324,13 +342,15 @@ class TestWebManagerHTTPAPI:
         assert response.status_code == 404
 
     @pytest.mark.anyio
-    async def test_api_clean_process_success(self, test_client, command_executor, tmp_path):
+    async def test_api_clean_process_success(
+        self, test_client, command_executor, tmp_path
+    ):
         """Test POST /api/processes/<id>/clean endpoint."""
         # Start and complete a process
         process = await command_executor.start_process(
             command=["python", str(CMD_SCRIPT_PATH), "echo", "clean test"],
             directory=tmp_path.as_posix(),
-            description="Test clean process"
+            description="Test clean process",
         )
         await process.wait_for_completion(timeout=10)
 
@@ -391,7 +411,7 @@ class TestWebManagerStartInterface:
 
         # Start in a separate thread to avoid blocking
         start_task = None
-        
+
         async def start_server():
             await initialized_web_manager.start_web_interface(
                 host="127.0.0.1", port=0, debug=True  # port=0 for random available port
@@ -418,7 +438,7 @@ class TestWebManagerUtilities:
         # This test needs to check the dict conversion functionality
         # We'll test this through the API endpoints which use this method internally
         response = test_client.get("/api/processes")
-        
+
         # The response should be formatted correctly
         assert response.status_code == 200
 
@@ -436,6 +456,7 @@ class TestWebManagerShutdown:
     @pytest.mark.anyio
     async def test_shutdown_with_server(self, initialized_web_manager):
         """Test shutdown with running server."""
+
         # Mock a running server
         class MockServer:
             def __init__(self):

@@ -1,10 +1,13 @@
-import os
-import time
-import anyio
-from typing import List, Optional, Dict, Any, AsyncGenerator, Protocol, runtime_checkable
+from typing import (
+    Dict,
+    List,
+    Optional,
+)
 
+import anyio
+
+from .interfaces import IProcessManager
 from .models import CommandResult
-from .interfaces import IProcessManager, IProcess
 
 
 async def execute_command(
@@ -29,7 +32,7 @@ async def execute_command(
             If stdin_data is a string, it will be encoded to bytes using the encoding parameter.
             If stdin_data is bytes, it will be passed to the command via stdin.
         timeout (Optional[int]): Maximum execution time in seconds.
-        envs (Optional[Dict[str, str]]): Additional environment variables for the command.        
+        envs (Optional[Dict[str, str]]): Additional environment variables for the command.
         limit_lines (Optional[int]): The maximum number of lines to return per TextContent.
         labels (Optional[List[str]]): A list of labels for process classification.
         description (Optional[str]): A description of the process.
@@ -54,18 +57,18 @@ async def execute_command(
         timeout=timeout,
         envs=envs,
         encoding=encoding,
-        labels=labels
+        labels=labels,
     )
     info = await process.wait_for_completion(timeout=timeout)
     end_time = anyio.current_time()
-    stdout_lines = [entry.text async for entry in process.get_output('stdout')]
-    stderr_lines = [entry.text async for entry in process.get_output('stderr')]
-    stdout = '\n'.join(stdout_lines)
-    stderr = '\n'.join(stderr_lines)
+    stdout_lines = [entry.text async for entry in process.get_output("stdout")]
+    stderr_lines = [entry.text async for entry in process.get_output("stderr")]
+    stdout = "\n".join(stdout_lines)
+    stderr = "\n".join(stderr_lines)
     return CommandResult(
         stdout=stdout,
         stderr=stderr,
         exit_status=info.status,
-        exit_code = info.exit_code if info.exit_code is not None else -1,
-        execution_time=end_time - start_time
+        exit_code=info.exit_code if info.exit_code is not None else -1,
+        execution_time=end_time - start_time,
     )

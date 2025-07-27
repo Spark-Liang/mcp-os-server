@@ -1,17 +1,17 @@
-import anyio
 import re
 import sys
 from pathlib import Path
 from typing import AsyncGenerator, List
 
+import anyio
 import pytest
 import pytest_asyncio
 from mcp.server.fastmcp import FastMCP
 from mcp.types import TextContent
 
+from mcp_os_server.command.interfaces import IProcessManager
 from mcp_os_server.command.output_manager import OutputManager
 from mcp_os_server.command.process_manager_anyio import AnyioProcessManager
-from mcp_os_server.command.interfaces import IProcessManager
 from mcp_os_server.command.server import define_mcp_server
 
 from .integration_test_utils import CMD_SCRIPT_PATH
@@ -342,9 +342,7 @@ class TestMCPServerBasicFunctionality:
             await process_manager.stop_process(process.pid, force=True)
 
     @pytest.mark.anyio
-    async def test_command_ps_stop_success(
-        self, mcp_server, process_manager, tmp_path
-    ):
+    async def test_command_ps_stop_success(self, mcp_server, process_manager, tmp_path):
         """Test stopping a running process."""
         # Start a process
         process = await process_manager.start_process(
@@ -395,9 +393,7 @@ class TestMCPServerBasicFunctionality:
             await process_manager.stop_process(process.pid, force=True)
 
     @pytest.mark.anyio
-    async def test_command_ps_logs_success(
-        self, mcp_server, process_manager, tmp_path
-    ):
+    async def test_command_ps_logs_success(self, mcp_server, process_manager, tmp_path):
         """Test getting logs for a completed process."""
         # Start and complete a process
         command_text = "test log output"

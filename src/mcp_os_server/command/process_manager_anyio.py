@@ -1,6 +1,12 @@
+import logging
+import os
+import subprocess
+import sys
 import uuid
 from datetime import datetime
-import sys
+from typing import AsyncGenerator, Dict, List, Optional
+import psutil
+import traceback
 
 import anyio
 from anyio import (
@@ -10,19 +16,12 @@ from anyio import (
     move_on_after,
     open_process,
     sleep,
-    CancelScope,
 )
 from anyio.abc import Process, TaskGroup
 
-import os
-from typing import AsyncGenerator, Dict, List, Optional
-
 from .exceptions import (
     CommandExecutionError,
-    OutputRetrievalError,
     ProcessControlError,
-    ProcessInfoRetrievalError,
-    ProcessListRetrievalError,
     ProcessNotFoundError,
     ProcessTimeoutError,
 )
@@ -35,12 +34,95 @@ from .interfaces import (
     ProcessStatus,
 )
 
-import subprocess
-
-import logging
-
 logger = logging.getLogger(__name__)
 
+
+async def terminate_windows_process(process: Process):
+    """
+    Terminate a Windows process.
+
+    Note: On Windows, terminating a process with process.terminate() doesn't
+    always guarantee immediate process termination.
+    So we give it 2s to exit, or we call process.kill()
+    which sends a SIGKILL equivalent signal.
+
+    Args:
+        process: The process to terminate
+    """
+    try:
+        parent = psutil.Process(process.pid)
+    except psutil.NoSuchProcess:
+        logger.debug("process %s not found", process.pid)
+        return
+    
+    try:
+        logger.debug("try to terminate process tree from %s", process.pid)
+        for child in parent.children(recursive=True):
+            try:
+                child.terminate()
+            except psutil.NoSuchProcess:
+                logger.debug("child process %s not found", child.pid)
+                continue
+        parent.terminate()
+        with anyio.fail_after(2.0):
+            await process.wait()
+            return
+    except Exception as e:
+        logger.debug("Failed to terminate process %s: %s", process.pid, str(e), exc_info=True)
+
+async def terminate_process(process: Process):
+    """
+    Terminate a process gracefully.
+
+    Args:
+        process: The process to terminate
+
+    Raises:
+        ProcessControlError: If the process cannot be terminated
+    """
+    if sys.platform == "win32":
+        await terminate_windows_process(process)
+    else:
+        process.terminate()
+
+
+async def kill_windows_process(process: Process):
+    """
+    Kill a Windows process.
+    """
+    try:
+        parent = psutil.Process(process.pid)
+    except psutil.NoSuchProcess:
+        logger.debug("process %s not found", process.pid)
+        return
+    
+    try:
+        logger.debug("try to kill process tree from %s", process.pid)
+        for child in parent.children(recursive=True):
+            try:
+                child.kill()
+            except psutil.NoSuchProcess:
+                logger.debug("child process %s not found", child.pid)
+                continue
+        parent.kill()
+        with anyio.fail_after(2.0):
+            await process.wait()
+            return
+    except Exception as e:
+        logger.debug("Failed to kill process %s: %s", process.pid, str(e), exc_info=True)
+
+async def kill_process(process: Process):
+    """
+    Kill a process.
+
+    Args:
+        process: The process to kill
+    """
+    logger.debug("获取调用方信息: \n%s", "\n".join(traceback.format_stack()))
+    if sys.platform == "win32":
+        await kill_windows_process(process)
+    else:
+        process.kill()
 
 class AnyioProcess(IProcess):
     def __init__(
@@ -52,7 +134,7 @@ class AnyioProcess(IProcess):
         directory: str,
         description: str,
         labels: list[str],
-        timeout: Optional[int],
+        timeout: int,
         encoding: str,
         envs: Dict[str, str],
         start_time: datetime,
@@ -93,18 +175,12 @@ class AnyioProcess(IProcess):
             async with create_task_group() as tg:
                 tg.start_soon(self._read_stream, self._process.stdout, "stdout")
                 tg.start_soon(self._read_stream, self._process.stderr, "stderr")
-                tg.start_soon(self._wait_process)
-                if self._timeout:
-                    tg.start_soon(self._handle_timeout)
+                tg.start_soon(self._wait_with_timeout)
+                # 启动一个任务，每1秒检查一次进程是否还在运行
+                tg.start_soon(self._check_process_running)
         except Exception as e:
             logger.debug("Exception in _run_monitoring: %s", str(e))
-            # 如果监控过程出现异常，设置进程状态为错误
-            async with self._lock:
-                if self._status == ProcessStatus.RUNNING:
-                    self._status = ProcessStatus.ERROR
-                    self._error_message = f"Monitoring failed: {str(e)}"
-                    self._end_time = datetime.now()
-            self._completion_event.set()
+            await self._set_final_status(ProcessStatus.ERROR, None, f"Monitoring failed: {str(e)}")
 
     async def _read_stream(self, stream, output_key: str):
         try:
@@ -116,68 +192,108 @@ class AnyioProcess(IProcess):
                     text = chunk.decode(self._encoding, errors="replace")
                     lines = text.splitlines()
                     if lines:  # 只有当有内容时才存储
-                        await self._output_manager.store_output(self._pid, output_key, lines)
+                        await self._output_manager.store_output(
+                            self._pid, output_key, lines
+                        )
                 except anyio.EndOfStream:
                     # Stream正常结束
                     break
                 except anyio.ClosedResourceError:
                     # Stream已关闭
+                    logger.debug("Stream %s closed", output_key, exc_info=True)
                     break
                 except Exception as e:
-                    logger.debug("Exception in _read_stream for %s: %s", output_key, str(e))
+                    logger.debug(
+                        "Exception in _read_stream for %s: %s", output_key, str(e)
+                    )
                     # 其他异常，记录但不中断
                     await self._output_manager.store_output(
                         self._pid, output_key, [f"Stream read error: {str(e)}"]
                     )
                     break
         except Exception as e:
-            logger.debug("Outer exception in _read_stream for %s: %s", output_key, str(e))
+            logger.debug(
+                "Outer exception in _read_stream for %s: %s", output_key, str(e), exc_info=True
+            )
             # 静默处理任何其他异常，避免监控任务崩溃
             pass
 
-    async def _wait_process(self):
-        try:
-            exit_code = await self._process.wait()
-            async with self._lock:
-                self._end_time = datetime.now()
-                self._exit_code = exit_code
-                # 检查是否已经被主动停止或超时
-                if self._status == ProcessStatus.TERMINATED:
-                    # 已经被标记为TERMINATED，保持这个状态
-                    pass
-                elif exit_code == 0:
-                    self._status = ProcessStatus.COMPLETED
-                else:
-                    self._status = ProcessStatus.FAILED
-        except Exception as e:
-            logger.debug("Exception in _wait_process: %s", str(e))
-            async with self._lock:
-                self._end_time = datetime.now()
-                self._status = ProcessStatus.ERROR
-                self._error_message = f"Wait failed: {str(e)}"
-        finally:
-            self._completion_event.set()
+    async def _check_process_running(self):
+        while True:
+            try:
+                with anyio.move_on_after(1):
+                    await self._process.wait()
+                    break
+                logger.debug("process %s is still running", self._pid)
+            except anyio.ClosedResourceError:
+                break
+            except anyio.EndOfStream:
+                break
+            except Exception as e:
+                logger.debug("Exception in _check_process_running: %s", str(e), exc_info=True)
+                break
 
-    async def _handle_timeout(self):
-        assert self._timeout is not None
-        await sleep(float(self._timeout))
-        async with self._lock:
-            if self._status == ProcessStatus.RUNNING:
-                try:
-                    self._process.terminate()
-                    self._error_message = "Process timed out"
-                    self._status = ProcessStatus.TERMINATED
-                except Exception as e:
-                    # 如果terminate失败，尝试kill
-                    try:
-                        self._process.kill()
-                        self._error_message = "Process timed out (killed)"
-                        self._status = ProcessStatus.TERMINATED
-                    except Exception as e:
-                        logger.debug("Failed to kill timed out process: %s", str(e))
-                        # 如果kill也失败，标记为错误状态
-                        self._status = ProcessStatus.ERROR
-                        self._error_message = "Process timed out (failed to terminate)"
+    async def _wait_with_timeout(self):
+        try:
+            with move_on_after(float(self._timeout)):
+                exit_code = await self._process.wait()
+                async with self._lock:
+                    if self._status == ProcessStatus.TERMINATED:
+                        status = ProcessStatus.TERMINATED
+                        error = self._error_message
+                    elif exit_code == 0:
+                        status = ProcessStatus.COMPLETED
+                        error = None
+                    else:
+                        status = ProcessStatus.FAILED
+                        error = None
+                await self._set_final_status(status, exit_code, error)
+                return
+            # Timeout block
+            error_msg = "Process timed out"
+            try:
+                await terminate_process(self._process)
+            except Exception as e:
+                logger.debug("Failed to terminate timed out process: %s", str(e))
+                await kill_process(self._process)
+                error_msg = "Process timed out (killed)"
+            # Wait for process to exit
+            with move_on_after(5.0):
+                exit_code = await self._process.wait()
+                await self._set_final_status(ProcessStatus.TERMINATED, exit_code, error_msg)
+                return
+            # If still not exited
+            await self._set_final_status(
+                ProcessStatus.ERROR, None, "Process timed out (failed to terminate)"
+            )
+        except Exception as e:
+            logger.debug("Exception in _wait_with_timeout: %s", str(e), exc_info=True)
+            await self._set_final_status(
+                ProcessStatus.ERROR, None, f"Wait failed: {str(e)}"
+            )
+
+    async def _set_final_status(
+        self,
+        status: ProcessStatus,
+        exit_code: Optional[int] = None,
+        error_message: Optional[str] = None,
+        already_acquired_lock: bool = False,
+    ) -> None:
+        if not ProcessStatus.is_final(status):
+            # 如果状态不是最终状态，则不设置
+            logger.warning("内部错误: 状态不是最终状态: %s", status)
+            return
+        def action():
+            self._status = status
+            self._exit_code = exit_code
+            self._error_message = error_message
+            self._end_time = datetime.now()
+            self._completion_event.set()
+        if not already_acquired_lock:
+            async with self._lock:
+                action()
+        else:
+            action()
 
     async def get_details(self) -> ProcessInfo:
         async with self._lock:
@@ -202,8 +318,11 @@ class AnyioProcess(IProcess):
                 await self._completion_event.wait()
                 info = await self.get_details()
                 # Check if process terminated due to internal timeout
-                if (info.status == ProcessStatus.TERMINATED and 
-                    info.error_message and "timed out" in info.error_message.lower()):
+                if (
+                    info.status == ProcessStatus.TERMINATED
+                    and info.error_message
+                    and "timed out" in info.error_message.lower()
+                ):
                     raise ProcessTimeoutError("Process timed out")
                 return info
             raise ProcessTimeoutError("Wait for completion timed out")
@@ -211,8 +330,11 @@ class AnyioProcess(IProcess):
             await self._completion_event.wait()
             info = await self.get_details()
             # Check if process terminated due to internal timeout
-            if (info.status == ProcessStatus.TERMINATED and 
-                info.error_message and "timed out" in info.error_message.lower()):
+            if (
+                info.status == ProcessStatus.TERMINATED
+                and info.error_message
+                and "timed out" in info.error_message.lower()
+            ):
                 raise ProcessTimeoutError("Process timed out")
             return info
 
@@ -229,19 +351,29 @@ class AnyioProcess(IProcess):
             yield entry
 
     async def stop(self, force: bool = False, reason: Optional[str] = None) -> None:
+        logger.debug("try to stop process %s with force: %s, reason: %s", self._pid, force, reason)
         async with self._lock:
             if self._status != ProcessStatus.RUNNING:
                 raise ProcessControlError("Process is not running")
             try:
                 if force:
-                    self._process.kill()
+                    await kill_process(self._process)
                 else:
-                    self._process.terminate()
-                self._error_message = reason or "Stopped by user"
-                self._status = ProcessStatus.TERMINATED
+                    await terminate_process(self._process)
+                    try:
+                        with anyio.fail_after(2.0):
+                            await self._process.wait()
+                    except Exception as e:
+                        logger.warning("Failed to wait for process to terminate: %s", str(e), exc_info=True)
+                        await kill_process(self._process)
+                
             except Exception as e:
                 logger.debug("Exception in stop: %s", str(e))
                 raise ProcessControlError(f"Failed to stop process: {str(e)}")
+            finally:
+                await self._set_final_status(
+                    ProcessStatus.TERMINATED, None, reason or "Stopped by user", already_acquired_lock=True
+                )
 
     async def clean(self) -> Optional[str]:
         await self._output_manager.clear_output(self._pid)
@@ -276,39 +408,56 @@ class AnyioProcessManager(IProcessManager):
                 with anyio.move_on_after(1):
                     await self._shutdown_event.wait()
                     break  # 收到shutdown信号，退出循环
-                
+
                 # 如果move_on_after超时（1秒内没有收到shutdown信号），继续执行清理任务
                 if self._shutdown_event.is_set():
                     break
-                
+
                 # 执行清理任务
                 processes_to_clean = []
                 async with self._lock:
                     for pid, p in list(self._processes.items()):
                         try:
                             info = await p.get_details()
-                            if (info.status in (ProcessStatus.COMPLETED, ProcessStatus.FAILED, 
-                                              ProcessStatus.TERMINATED, ProcessStatus.ERROR) 
-                                and info.end_time 
-                                and (datetime.now() - info.end_time).total_seconds() > self.process_retention_seconds):
+                            if (
+                                info.status
+                                in (
+                                    ProcessStatus.COMPLETED,
+                                    ProcessStatus.FAILED,
+                                    ProcessStatus.TERMINATED,
+                                    ProcessStatus.ERROR,
+                                )
+                                and info.end_time
+                                and (datetime.now() - info.end_time).total_seconds()
+                                > self.process_retention_seconds
+                            ):
                                 processes_to_clean.append((pid, p))
                         except Exception as e:
-                            logger.debug("Exception getting details in _auto_cleaner for %s: %s", pid, str(e))
+                            logger.debug(
+                                "Exception getting details in _auto_cleaner for %s: %s",
+                                pid,
+                                str(e),
+                            )
                             continue
-                
+
                 # 在锁外清理进程输出，然后在锁内移除进程
                 async with create_task_group() as tg:
+
                     async def clean_one(pid, p):
                         try:
                             await p._output_manager.clear_output(pid)
                             async with p._lock:
                                 p._cleaned = True
                         except Exception as e:
-                            logger.warning("Failed to clean process %s in _auto_cleaner: %s", pid, str(e))
+                            logger.warning(
+                                "Failed to clean process %s in _auto_cleaner: %s",
+                                pid,
+                                str(e),
+                            )
 
                     for pid, process in processes_to_clean:
                         tg.start_soon(clean_one, pid, process)
-                
+
                 async with self._lock:
                     for pid, _ in processes_to_clean:
                         if pid in self._processes:
@@ -323,27 +472,50 @@ class AnyioProcessManager(IProcessManager):
         command: List[str],
         directory: str,
         description: str,
+        timeout: int,
         stdin_data: Optional[bytes | str] = None,
-        timeout: Optional[int] = None,
         envs: Optional[Dict[str, str]] = None,
         encoding: str = sys.getdefaultencoding(),
         labels: Optional[List[str]] = None,
     ) -> IProcess:
         env = {**os.environ, **(envs or {})}
         try:
-            process = await open_process(
-                command,
-                cwd=directory,
-                env=env,
-                stdin=subprocess.PIPE if stdin_data else subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+            logger.debug(f"Starting process:\ncommand: {command}\ndirectory: {directory}\nenv: {env}")
+            if sys.platform == "win32":
+                creation_flags = subprocess.CREATE_NO_WINDOW
+                try:
+                    process = await open_process(
+                        command,
+                        cwd=directory,
+                        env=env,
+                        stdin=subprocess.PIPE if stdin_data else subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        creationflags=creation_flags,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to open process with creation flags: %s", str(e))
+                    process = await open_process(
+                        command,
+                        cwd=directory,
+                        env=env,
+                        stdin=subprocess.PIPE if stdin_data else subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+            else:
+                process = await open_process(
+                    command,
+                    cwd=directory,
+                    env=env,
+                    stdin=subprocess.PIPE if stdin_data else subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
         except Exception as e:
             logger.debug("Failed to open process: %s", str(e))
             raise CommandExecutionError(f"Failed to start process: {e}") from e
 
-        
         async with self._lock:
             # 使用前5位UUID作为PID，避免PID过长。并且检查PID是否已经存在，如果存在，则重新生成，最多重试10次
             for _ in range(10):
@@ -353,7 +525,18 @@ class AnyioProcessManager(IProcessManager):
                 else:
                     logger.debug("Process with PID %s already exists, retrying...", pid)
             if pid in self._processes:
-                raise CommandExecutionError(f"Failed to generate unique PID after 10 attempts")
+                try:
+                    await terminate_process(process)
+                except Exception as e:
+                    logger.warning("Failed to terminate process: %s", str(e))
+                    try:
+                        await kill_process(process)
+                    except Exception as e:
+                        logger.warning("Failed to kill process: %s", str(e))
+                    
+                raise CommandExecutionError(
+                    "Failed to generate unique PID after 10 attempts"
+                )
 
             start_time = datetime.now()
             anyio_process = AnyioProcess(
@@ -371,7 +554,7 @@ class AnyioProcessManager(IProcessManager):
             )
 
             self._processes[pid] = anyio_process
-        
+
         # 确保main_tg存在才启动监控任务
         if self._main_tg is not None:
             self._main_tg.start_soon(anyio_process._run_monitoring)
@@ -383,16 +566,21 @@ class AnyioProcessManager(IProcessManager):
                     try:
                         stdin_data = stdin_data.encode(encoding)
                     except UnicodeEncodeError as e:
-                        raise CommandExecutionError(f"Failed to encode stdin_data with {encoding}: {str(e)}") from e
+                        raise CommandExecutionError(
+                            f"Failed to encode stdin_data with {encoding}: {str(e)}"
+                        ) from e
                 if process.stdin is not None:
                     try:
                         await process.stdin.send(stdin_data)
                         await process.stdin.aclose()
                     except Exception as e:
-                        raise CommandExecutionError(f"Failed to write stdin_data to subprocess: {str(e)}") from e
+                        raise CommandExecutionError(
+                            f"Failed to write stdin_data to subprocess: {str(e)}"
+                        ) from e
             except CommandExecutionError:
+                logger.error("Failed to write stdin_data to subprocess, force stop process", exc_info=True)
                 # 如果stdin处理失败，关闭进程并抛出异常
-                await anyio_process.stop(force=True)
+                await anyio_process.stop(force=True, reason="Failed to write stdin_data to subprocess")
                 raise
 
         return anyio_process
@@ -431,12 +619,17 @@ class AnyioProcessManager(IProcessManager):
 
         pid_to_info = {}
         async with create_task_group() as tg:
+
             async def get_info(pid, p):
                 try:
                     info = await p.get_details()
                     pid_to_info[pid] = info
                 except Exception as e:
-                    logger.debug("Exception getting details in list_processes for %s: %s", pid, str(e))
+                    logger.debug(
+                        "Exception getting details in list_processes for %s: %s",
+                        pid,
+                        str(e),
+                    )
 
             for pid, p in process_list:
                 tg.start_soon(get_info, pid, p)
@@ -444,8 +637,10 @@ class AnyioProcessManager(IProcessManager):
         result = []
         for pid, _ in process_list:
             info = pid_to_info.get(pid)
-            if info and (status is None or info.status == status) and (
-                labels is None or set(labels).issubset(set(info.labels))
+            if (
+                info
+                and (status is None or info.status == status)
+                and (labels is None or set(labels).issubset(set(info.labels)))
             ):
                 result.append(info)
 
@@ -460,13 +655,16 @@ class AnyioProcessManager(IProcessManager):
                     results[pid] = "Not found"
                     continue
                 p = self._processes[pid]
-                info = await p.get_details()  # Note: get_details inside lock, but it's fast
+                info = (
+                    await p.get_details()
+                )  # Note: get_details inside lock, but it's fast
                 if info.status == ProcessStatus.RUNNING:
                     results[pid] = "Failed: Process is still running"
                     continue
                 processes_to_clean[pid] = p
 
         async with create_task_group() as tg:
+
             async def clean_one(pid, p):
                 try:
                     res = await p.clean()
@@ -486,9 +684,20 @@ class AnyioProcessManager(IProcessManager):
         return results
 
     async def shutdown(self) -> None:
+        logger.debug("shutdown called from \n%s", "\n".join(traceback.format_stack()))
         # 设置关闭事件，停止自动清理任务
         self._shutdown_event.set()
-        
+
+        # 停止主task group
+        if self._main_tg:
+            try:
+                self._main_tg.cancel_scope.cancel()
+                await self._main_tg.__aexit__(None, None, None)
+                self._main_tg = None
+            except Exception as e:
+                logger.debug("Exception closing task group in shutdown: %s", str(e))
+                pass
+
         # 停止所有进程
         try:
             async with create_task_group() as tg:
@@ -499,7 +708,7 @@ class AnyioProcessManager(IProcessManager):
             logger.debug("Exception stopping processes in shutdown: %s", str(e))
             # 即使停止进程失败，也要继续清理
             pass
-        
+
         # 清理所有进程
         try:
             async with create_task_group() as tg:
@@ -510,7 +719,7 @@ class AnyioProcessManager(IProcessManager):
             logger.debug("Exception cleaning processes in shutdown: %s", str(e))
             # 即使清理失败，也要继续关闭task group
             pass
-        
+
         # 关闭主task group
         if self._main_tg:
             try:
@@ -521,13 +730,14 @@ class AnyioProcessManager(IProcessManager):
                 pass
             finally:
                 self._main_tg = None
+        logger.debug("shutdown completed")
 
     async def _safe_stop_process(self, process: AnyioProcess) -> None:
         """安全地停止进程，捕获所有异常"""
         try:
-            await process.stop(force=True)
+            await process.stop(force=True, reason="shutdown manager")
         except Exception as e:
-            logger.debug("Exception in _safe_stop_process: %s", str(e))
+            logger.debug("Exception in _safe_stop_process: %s", str(e), exc_info=True)
             pass
 
     async def _safe_clean_process(self, process: AnyioProcess) -> None:

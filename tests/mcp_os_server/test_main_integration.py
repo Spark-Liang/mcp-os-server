@@ -1,4 +1,3 @@
-import anyio
 import os
 import re
 import sys
@@ -8,15 +7,14 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import AsyncGenerator, List, Optional, Sequence
 
+import anyio
 import pytest
 from mcp import ClientSession, StdioServerParameters
-from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamablehttp_client
 from mcp.types import TextContent
 
-
 # Path to the helper script
+PROJECT_ROOT = Path(__file__).parent.parent.parent
 CMD_SCRIPT_PATH = Path(__file__).parent / "command" / "cmd_for_test.py"
 
 # Constants for server start modes
@@ -246,6 +244,33 @@ def validate_error_message_format(text: str, error_type: str) -> bool:
     return pattern in text
 
 
+
+@pytest.fixture(autouse=True) # 使用 autouse=True 让 fixture 自动应用于所有测试，无需显式传入
+def inject_test_name(request):
+    """
+    一个 fixture，将当前测试用例的名称注入到测试类的实例中。
+    """
+    # 检查 request.instance 是否存在且非 None
+    # 对于模块级别的函数测试（非类方法），request.instance 将为 None
+    if request.instance:
+        # 获取当前测试用例的名称
+        test_case_name = request.node.name
+
+        # 将名称设置到测试类的实例属性中
+        # 你可以使用任何你喜欢的属性名，例如 _test_name, current_test_name 等
+        request.instance.test_name = test_case_name
+        print(f"\nFixture: 为测试类实例注入属性 'test_name': '{test_case_name}'")
+    else:
+        # 对于非类中的函数测试，你可以选择跳过或采取其他操作
+        print(f"\nFixture: 当前测试 '{request.node.name}' 不在类中，跳过属性注入。")
+
+    yield # fixture 的 setup 部分结束，yield 之后是 teardown 部分
+
+    # Teardown: 你可以在这里清理注入的属性（可选）
+    if request.instance and hasattr(request.instance, 'test_name'):
+        print(f"Fixture: 清理测试类实例属性 'test_name' for '{request.instance.test_name}'")
+        del request.instance.test_name
+
 @pytest.mark.parametrize(
     "process_manager_type",
     [
@@ -254,6 +279,9 @@ def validate_error_message_format(text: str, error_type: str) -> bool:
 )
 class BaseCommandServerIntegrationTest(ABC):
     """Abstract base class for command server integration tests."""
+
+    # 仍然需要声明属性，以便类型检查器知道它在这里被实现
+    test_name: Optional[str] = None
 
     @abstractmethod
     async def new_mcp_client_session(
@@ -287,7 +315,6 @@ class BaseCommandServerIntegrationTest(ABC):
         and provide an MCP client session for tests.
         """
         import sys
-        import tempfile
 
         # Set up default parameters
         allowed_commands = (
@@ -328,11 +355,10 @@ class BaseCommandServerIntegrationTest(ABC):
         with 10 seconds process retention time for testing retention logic.
         """
         import sys
-        import tempfile
 
         # Set up default parameters with 10 seconds retention
         allowed_commands = (
-            "echo,ls,sleep,cat,grep,pwd,"
+            "echo,ls,sleep,cat,grep,pwd,uv,"
             + sys.executable
             + ",nonexistent-command-12345"
         )
@@ -419,7 +445,7 @@ class BaseCommandServerIntegrationTest(ABC):
         # Add timeout to prevent hanging
         try:
             result = await self.call_tool(
-            mcp_client_session,
+                mcp_client_session,
                 "command_execute",
                 {
                     "command": "echo",  # Use simple echo command for reliability
@@ -734,8 +760,10 @@ class BaseCommandServerIntegrationTest(ABC):
             # 验证进程在列表中
             list_text = list_result[0].text
             # The PID in the list may be truncated, so check for the first part of the PID
-            pid_prefix = pid.split('-')[0] if '-' in pid else pid[:8]
-            assert pid_prefix in list_text, f"Expected PID prefix '{pid_prefix}' to be in process list: {list_text}"
+            pid_prefix = pid.split("-")[0] if "-" in pid else pid[:8]
+            assert (
+                pid_prefix in list_text
+            ), f"Expected PID prefix '{pid_prefix}' to be in process list: {list_text}"
             assert "timeout-test" in list_text
             print(
                 "✓ Timed out process found in process list within retention time",
@@ -801,7 +829,7 @@ class BaseCommandServerIntegrationTest(ABC):
                 print("✓ Process list is empty after retention time", file=sys.stderr)
             else:
                 # 如果列表不为空，确保我们的进程不在其中
-                pid_prefix = pid.split('-')[0] if '-' in pid else pid[:8]
+                pid_prefix = pid.split("-")[0] if "-" in pid else pid[:8]
                 assert (
                     pid_prefix not in list_text
                 ), f"Process prefix {pid_prefix} should not be in the list after retention time. list_text: {list_text}"
@@ -1085,6 +1113,70 @@ class BaseCommandServerIntegrationTest(ABC):
                 print(f"Error type: {type(e)}", file=sys.stderr)
                 raise
 
+    @pytest.mark.anyio
+    @pytest.mark.timeout(25)  # Give this test more time
+    async def test_command_bg_start_timeout_with_unresponsive_program(
+        self, mcp_client_session_with_5_seconds_retention: ClientSession, tmp_path
+    ):
+        """Integration test: Verify timeout termination of unresponsive background process."""
+        print("Running test_command_bg_start_timeout_with_unresponsive_program...", file=sys.stderr)
+
+        # Step 1: Start a background process with loop command that won't respond quickly
+        start_result = await self.call_tool(
+            mcp_client_session_with_5_seconds_retention,
+            "command_bg_start",
+            {
+                "command": sys.executable,
+                "args": [str(CMD_SCRIPT_PATH), "loop", "10"],  # Loop for 10 seconds
+                "directory": str(tmp_path),
+                "description": "Test unresponsive timeout",
+                "labels": ["unresponsive-test"],
+                "stdin": None,
+                "timeout": 5,  # Short timeout
+                "envs": None,
+            },
+        )
+
+        assert isinstance(start_result, (list, tuple))
+        assert len(start_result) == 1
+        assert isinstance(start_result[0], TextContent)
+
+        # Validate and extract PID
+        pid = validate_process_started_format(start_result[0].text)
+        assert pid
+        print(f"Started unresponsive process with PID: {pid}", file=sys.stderr)
+
+        # Step 2: Wait for timeout (slightly longer than timeout)
+        await anyio.sleep(2)
+        print("Process should have timed out by now", file=sys.stderr)
+
+        # Step 3: Verify process status is TERMINATED
+        detail_result = await self.call_tool(
+            mcp_client_session_with_5_seconds_retention,
+            "command_ps_detail",
+            {"pid": pid},
+        )
+
+        assert isinstance(detail_result, (list, tuple))
+        assert len(detail_result) == 1
+        assert isinstance(detail_result[0], TextContent)
+
+        detail_text = detail_result[0].text
+        assert validate_process_detail_format(detail_text, pid)
+        assert "TERMINATED" in detail_text.upper()
+        assert "timed out" in detail_text.lower()
+        print("✓ Process status is TERMINATED after timeout", file=sys.stderr)
+
+        # Step 4: Clean up the process
+        await self.call_tool(
+            mcp_client_session_with_5_seconds_retention,
+            "command_ps_clean",
+            {"pids": [pid]},
+        )
+        print("✓ Process cleaned up", file=sys.stderr)
+
+        print("✅ Integration unresponsive timeout test passed", file=sys.stderr)
+
 
 class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
     """Integration tests for the MCP Command Server via STDIO protocol."""
@@ -1099,8 +1191,6 @@ class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
         """
         Factory method to create MCP client session for STDIO mode.
         """
-        # Get the absolute path to the project root
-        project_root = Path(__file__).parent.parent.parent.resolve()
 
         # Set up environment variables for the command server
         env = os.environ.copy()
@@ -1110,18 +1200,22 @@ class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
         if process_retention_seconds is not None:
             env["PROCESS_RETENTION_SECONDS"] = str(process_retention_seconds)
         env["PYTHONIOENCODING"] = "utf-8"
-
+        # 固定在 .tmp 目录下生成日志文件，因为 gitignore 会忽略 .tmp 目录
+        cleaned_test_name = re.sub(r'[^\w\d_.-]', '_', self.test_name) if self.test_name else "unknown_test"
+        log_file_path = PROJECT_ROOT / ".tmp" / f"mcp_os_server_{cleaned_test_name}.log"
+        env["LOG_FILE_PATH"] = str(log_file_path)
+        print(f"Logging to: {log_file_path}", file=sys.stderr)
         cmd, args = _get_server_start_params(
-            server_type="command", mode="stdio", project_root=project_root, env=env
+            server_type="command", mode="stdio", project_root=PROJECT_ROOT, env=env
         )
 
         server_params = StdioServerParameters(
             command=cmd,
-            args=args,
+            args=args+["--debug"],
             env=env,
         )
         print(
-            f"Starting MCP command server from project: {project_root}", file=sys.stderr
+            f"Starting MCP command server from project: {PROJECT_ROOT}", file=sys.stderr
         )
         print(
             f"Environment: ALLOWED_COMMANDS={env.get('ALLOWED_COMMANDS')}",
@@ -1134,7 +1228,7 @@ class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
 
         try:
             print("Initializing MCP session...", file=sys.stderr)
-            stdio_context = stdio_client(server_params)
+            stdio_context = stdio_client(server_params, errlog=sys.stdout)
 
             # Add longer timeout for session initialization
             read, write = await stdio_context.__aenter__()
@@ -1218,13 +1312,15 @@ class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
 @pytest.mark.timeout(90)  # Unified tests need more time for combined server startup
 class TestUnifiedServerIntegration:
     """Integration tests for the MCP Unified Server via MCP protocol."""
+
     # Simplified version - main implementation would include the full unified server tests
 
 
-# Test filtering functionality with environment variables  
+# Test filtering functionality with environment variables
 @pytest.mark.timeout(60)
 class TestEnvironmentVariableFiltering:
     """Integration tests for environment variable filtering functionality."""
+
     # Simplified version - main implementation would include filtering tests
 
 
@@ -1234,6 +1330,7 @@ class TestEnvironmentVariableFiltering:
 )
 class TestCommandServerSSEIntegration(BaseCommandServerIntegrationTest):
     """Integration tests for the MCP Command Server via SSE protocol."""
+
     pass  # Simplified - skipped tests
 
 
@@ -1243,6 +1340,7 @@ class TestCommandServerSSEIntegration(BaseCommandServerIntegrationTest):
 )
 class TestCommandServerStreamableHttpIntegration(BaseCommandServerIntegrationTest):
     """Integration tests for the MCP Command Server via Streamable HTTP protocol."""
+
     pass  # Simplified - skipped tests
 
 

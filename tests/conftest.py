@@ -1,13 +1,11 @@
+import logging
 
 import pytest
-import logging
 
 
 @pytest.fixture(scope="session")
 def anyio_backend():
     return "asyncio"
-
-
 
 
 # 获取根日志器
@@ -16,6 +14,7 @@ def anyio_backend():
 # 例如：logger = logging.getLogger('my_app')
 # 或者：logger = logging.getLogger() # 获取根日志器
 logger = logging.getLogger()
+
 
 def pytest_configure(config):
     """
@@ -34,11 +33,10 @@ def pytest_configure(config):
 
         # 可选：配置日志格式和处理器
         # 这部分取决于你希望日志输出到哪里（控制台、文件等）以及什么格式
-        if not logger.handlers: # 避免重复添加处理器
-            handler = logging.StreamHandler() # 输出到控制台
-            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        if not logger.handlers:  # 避免重复添加处理器
+            handler = logging.StreamHandler()  # 输出到控制台
+            formatter = logging.Formatter(
+                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            )
             handler.setFormatter(formatter)
             logger.addHandler(handler)
-    
-
-    

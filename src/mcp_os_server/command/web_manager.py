@@ -13,7 +13,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import anyio
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
@@ -410,9 +409,11 @@ class WebManager:
         """Get all processes with optional filtering."""
         if not self._process_manager:
             raise WebInterfaceError("WebManager not initialized")
-        
+
         try:
-            return await self._process_manager.list_processes(status=status, labels=labels)
+            return await self._process_manager.list_processes(
+                status=status, labels=labels
+            )
         except Exception as e:
             raise WebInterfaceError(f"Failed to get processes: {e}") from e
 
@@ -420,7 +421,7 @@ class WebManager:
         """Get detailed information for a specific process."""
         if not self._process_manager:
             raise WebInterfaceError("WebManager not initialized")
-        
+
         try:
             return await self._process_manager.get_process_info(process_id)
         except Exception as e:
@@ -440,53 +441,59 @@ class WebManager:
         """Get process output."""
         if not self._process_manager:
             raise WebInterfaceError("WebManager not initialized")
-        
+
         try:
             output = {"stdout": [], "stderr": []}
-            
+
             # Get the process instance first
             process = await self._process_manager.get_process(process_id)
-            
+
             # Convert datetime to timestamp if needed
             since_ts = since.timestamp() if since else None
             until_ts = until.timestamp() if until else None
-            
+
             if with_stdout:
                 async for entry in process.get_output(
                     "stdout", since=since_ts, until=until_ts, tail=tail
                 ):
-                    output["stdout"].append({
-                        "timestamp": entry.timestamp.isoformat(),
-                        "content": entry.text
-                    })
-            
+                    output["stdout"].append(
+                        {
+                            "timestamp": entry.timestamp.isoformat(),
+                            "content": entry.text,
+                        }
+                    )
+
             if with_stderr:
                 async for entry in process.get_output(
                     "stderr", since=since_ts, until=until_ts, tail=tail
                 ):
-                    output["stderr"].append({
-                        "timestamp": entry.timestamp.isoformat(),
-                        "content": entry.text
-                    })
-            
+                    output["stderr"].append(
+                        {
+                            "timestamp": entry.timestamp.isoformat(),
+                            "content": entry.text,
+                        }
+                    )
+
             return output
         except Exception as e:
             if "not found" in str(e).lower():
                 raise ProcessNotFoundError(f"Process {process_id} not found") from e
             raise WebInterfaceError(f"Failed to get process output: {e}") from e
 
-    async def stop_process(self, process_id: str, force: bool = False) -> Dict[str, str]:
+    async def stop_process(
+        self, process_id: str, force: bool = False
+    ) -> Dict[str, str]:
         """Stop a process."""
         if not self._process_manager:
             raise WebInterfaceError("WebManager not initialized")
-        
+
         try:
             await self._process_manager.stop_process(process_id, force=force)
             return {
                 "pid": process_id,
                 "action": "stop",
                 "force": str(force),
-                "message": f"Process {process_id} stopped successfully"
+                "message": f"Process {process_id} stopped successfully",
             }
         except Exception as e:
             if "not found" in str(e).lower():
@@ -497,7 +504,7 @@ class WebManager:
         """Clean a process."""
         if not self._process_manager:
             raise WebInterfaceError("WebManager not initialized")
-        
+
         try:
             result = await self._process_manager.clean_processes([process_id])
             clean_result = result.get(process_id, "Unknown result") or "Unknown result"
@@ -505,7 +512,7 @@ class WebManager:
                 "pid": process_id,
                 "action": "clean",
                 "result": clean_result,
-                "message": f"Process {process_id} cleaned"
+                "message": f"Process {process_id} cleaned",
             }
         except Exception as e:
             raise WebInterfaceError(f"Failed to clean process: {e}") from e
@@ -514,43 +521,53 @@ class WebManager:
         """Clean all completed/failed processes."""
         if not self._process_manager:
             raise WebInterfaceError("WebManager not initialized")
-        
+
         try:
             # Get all completed/failed processes
             all_processes = await self._process_manager.list_processes()
             cleanable_pids = [
-                p.pid for p in all_processes 
-                if p.status in [ProcessStatus.COMPLETED, ProcessStatus.FAILED, ProcessStatus.TERMINATED]
+                p.pid
+                for p in all_processes
+                if p.status
+                in [
+                    ProcessStatus.COMPLETED,
+                    ProcessStatus.FAILED,
+                    ProcessStatus.TERMINATED,
+                ]
             ]
-            
+
             if not cleanable_pids:
                 return {"cleaned_count": 0, "message": "No processes to clean"}
-            
+
             results = await self._process_manager.clean_processes(cleanable_pids)
-            cleaned_count = len([r for r in results.values() if "success" in str(r).lower()])
-            
+            cleaned_count = len(
+                [r for r in results.values() if "success" in str(r).lower()]
+            )
+
             return {
                 "cleaned_count": cleaned_count,
                 "total_candidates": len(cleanable_pids),
-                "message": f"Cleaned {cleaned_count} processes"
+                "message": f"Cleaned {cleaned_count} processes",
             }
         except Exception as e:
             raise WebInterfaceError(f"Failed to clean all processes: {e}") from e
 
-    async def clean_selected_processes(self, process_ids: list[str]) -> Dict[str, list[Dict]]:
+    async def clean_selected_processes(
+        self, process_ids: list[str]
+    ) -> Dict[str, list[Dict]]:
         """Clean selected processes."""
         if not process_ids:
             raise ValueError("Process ID list cannot be empty")
-        
+
         if not self._process_manager:
             raise WebInterfaceError("WebManager not initialized")
-        
+
         try:
             results = await self._process_manager.clean_processes(process_ids)
-            
+
             successful = []
             not_found = []
-            
+
             for pid, result in results.items():
                 if "success" in str(result).lower():
                     successful.append({"pid": pid, "result": result})
@@ -559,11 +576,8 @@ class WebManager:
                 else:
                     # Other errors
                     successful.append({"pid": pid, "result": result})
-            
-            return {
-                "successful": successful,
-                "not_found": not_found
-            }
+
+            return {"successful": successful, "not_found": not_found}
         except Exception as e:
             raise WebInterfaceError(f"Failed to clean selected processes: {e}") from e
 
@@ -693,7 +707,7 @@ class WebManager:
                 "backend": "anyio",
                 "total_tasks": "unknown",
                 "tasks": {},
-                "note": "Task introspection not available with anyio backend"
+                "note": "Task introspection not available with anyio backend",
             }
         except Exception as e:
             return {

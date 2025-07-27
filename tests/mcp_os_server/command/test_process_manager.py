@@ -1,13 +1,13 @@
-import anyio
 import os
 import sys
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime
+from pathlib import Path
 from typing import AsyncGenerator, Dict, Optional
 
+import anyio
 import pytest
-import pytest_asyncio
 
 from mcp_os_server.command.exceptions import (
     CommandExecutionError,
@@ -24,8 +24,10 @@ from mcp_os_server.command.process_manager_anyio import AnyioProcessManager
 
 pytestmark = pytest.mark.anyio
 
-def is_clean_success(pid,clean_result: Dict[str, Optional[str]]) -> bool:
+
+def is_clean_success(pid, clean_result: Dict[str, Optional[str]]) -> bool:
     return pid not in clean_result or clean_result[pid] is None
+
 
 @pytest.fixture
 def mock_output_manager(mocker) -> IOutputManager:
@@ -124,6 +126,7 @@ class ProcessManagerTestBase(ABC):
                 directory=".",
                 description="Test echo process",
                 labels=["test", "echo"],
+                timeout=5,
             )
 
             assert process is not None
@@ -151,6 +154,7 @@ class ProcessManagerTestBase(ABC):
                 command=command,
                 directory=".",
                 description="Test sleep process",
+                timeout=5,
             )
 
             # Ensure it's running
@@ -182,6 +186,7 @@ class ProcessManagerTestBase(ABC):
                 command=["sleep", "0.5"],
                 directory=".",
                 description="Test short sleep",
+                timeout=5,
             )
             completed_info = await process.wait_for_completion()
             end_time = time.monotonic()
@@ -201,6 +206,7 @@ class ProcessManagerTestBase(ABC):
                 directory=".",
                 description="Test timeout process",
                 timeout=1,
+                encoding="utf-8",
             )
 
             with pytest.raises(ProcessTimeoutError):
@@ -219,6 +225,7 @@ class ProcessManagerTestBase(ABC):
                 command=["echo", "test_info"],
                 directory=".",
                 description="Info Test",
+                timeout=5,
             )
             info = await process_manager.get_process_info(process.pid)
             assert info.pid == process.pid
@@ -234,10 +241,10 @@ class ProcessManagerTestBase(ABC):
         process_manager = await self.create_process_manager(mock_output_manager)
         try:
             p1 = await process_manager.start_process(
-                ["echo", "1"], ".", "p1", labels=["group1"]
+                ["echo", "1"], ".", "p1", labels=["group1"], timeout=5
             )
             p2 = await process_manager.start_process(
-                ["sleep", "5"], ".", "p2", labels=["group2"]
+                ["sleep", "5"], ".", "p2", labels=["group2"], timeout=5
             )
 
             await p1.wait_for_completion()
@@ -289,6 +296,7 @@ class ProcessManagerTestBase(ABC):
                 description="Test Unicode args",
                 encoding="utf-8",
                 envs={"PYTHONIOENCODING": "utf-8"},
+                timeout=5,
             )
             completed_info = await process.wait_for_completion()
             assert completed_info.status == ProcessStatus.COMPLETED
@@ -323,9 +331,10 @@ class ProcessManagerTestBase(ABC):
                 command=command,
                 directory=".",
                 description="Test Unicode stdin",
-                stdin_data=unicode_input, 
+                stdin_data=unicode_input,
                 encoding="utf-8",
                 envs={"PYTHONIOENCODING": "utf-8"},
+                timeout=5,
             )
             completed_info = await process.wait_for_completion()
             assert completed_info.status == ProcessStatus.COMPLETED
@@ -366,6 +375,7 @@ class ProcessManagerTestBase(ABC):
                 directory=".",
                 description="Test simple CMD wrapper",  # Updated description
                 encoding="utf-8",  # Still expect UTF-8 from the cmd output
+                timeout=5,
             )
 
             # 获取进程详情以检查错误信息
@@ -398,10 +408,10 @@ class ProcessManagerTestBase(ABC):
         process_manager = await self.create_process_manager(mock_output_manager)
         try:
             p_completed = await process_manager.start_process(
-                ["echo", "clean me"], ".", "p_completed"
+                ["echo", "clean me"], ".", "p_completed", timeout=5
             )
             p_running = await process_manager.start_process(
-                ["sleep", "5"], ".", "p_running"
+                ["sleep", "5"], ".", "p_running", timeout=5
             )
 
             await p_completed.wait_for_completion()
@@ -411,7 +421,7 @@ class ProcessManagerTestBase(ABC):
                 [p_completed.pid, p_running.pid]
             )
 
-            assert is_clean_success(p_completed.pid,results)
+            assert is_clean_success(p_completed.pid, results)
             assert (
                 "failed" in (results[p_running.pid] or "").lower()
             )  # Cannot clean running process
@@ -438,6 +448,7 @@ class ProcessManagerTestBase(ABC):
                     command=["non_existent_command_12345"],
                     directory=".",
                     description="Non-existent command",
+                    timeout=5,
                 )
         finally:
             await self.cleanup_process_manager(process_manager)
@@ -457,6 +468,7 @@ class ProcessManagerTestBase(ABC):
                 directory=".",
                 description="Test retention cleanup",
                 labels=["retention-test"],
+                timeout=5,
             )
 
             # Wait for completion
@@ -501,6 +513,7 @@ class ProcessManagerTestBase(ABC):
                 directory=".",
                 description="Test manual clean",
                 labels=["manual-clean-test"],
+                timeout=5,
             )
 
             # Wait for completion
@@ -511,7 +524,7 @@ class ProcessManagerTestBase(ABC):
             results = await process_manager_short_retention.clean_processes(
                 [process.pid]
             )
-            assert is_clean_success(process.pid,results)
+            assert is_clean_success(process.pid, results)
 
             # Process should be gone immediately
             with pytest.raises(ProcessNotFoundError):
@@ -555,7 +568,9 @@ class ProcessManagerTestBase(ABC):
             assert any(p.pid == process.pid for p in all_processes)
 
             # Process should still be available immediately after timeout
-            process_info = await process_manager_short_retention.get_process_info(process.pid)
+            process_info = await process_manager_short_retention.get_process_info(
+                process.pid
+            )
             assert process_info.pid == process.pid
             assert process_info.status == ProcessStatus.TERMINATED
 
@@ -583,6 +598,7 @@ class ProcessManagerTestBase(ABC):
                 directory=".",
                 description="Test long running",
                 labels=["long-running"],
+                timeout=5,
             )
 
             # Verify it's running
@@ -611,7 +627,13 @@ class ProcessManagerTestBase(ABC):
         try:
             async with anyio.create_task_group() as tg:
                 for i in range(5):
-                    tg.start_soon(process_manager.start_process, ["echo", f"test {i}"], ".", f"Concurrent {i}")
+                    tg.start_soon(
+                        process_manager.start_process,
+                        ["echo", f"test {i}"],
+                        ".",
+                        f"Concurrent {i}",
+                        5,
+                    )
 
             processes = await process_manager.list_processes()
             assert len(processes) == 5
@@ -622,13 +644,15 @@ class ProcessManagerTestBase(ABC):
         finally:
             await self.cleanup_process_manager(process_manager)
 
-    async def test_concurrent_lists_during_operations(self, mock_output_manager: IOutputManager):
+    async def test_concurrent_lists_during_operations(
+        self, mock_output_manager: IOutputManager
+    ):
         """Test concurrent list_processes while starting and stopping processes."""
         process_manager = await self.create_process_manager(mock_output_manager)
         try:
             # Start some processes
-            p1 = await process_manager.start_process(["sleep", "2"], ".", "Sleep 1")
-            p2 = await process_manager.start_process(["sleep", "2"], ".", "Sleep 2")
+            p1 = await process_manager.start_process(["sleep", "2"], ".", "Sleep 1", timeout=5)
+            p2 = await process_manager.start_process(["sleep", "2"], ".", "Sleep 2", timeout=5)
 
             async def list_repeatedly():
                 for _ in range(10):
@@ -637,7 +661,9 @@ class ProcessManagerTestBase(ABC):
 
             async with anyio.create_task_group() as tg:
                 tg.start_soon(list_repeatedly)
-                tg.start_soon(process_manager.start_process, ["echo", "test"], ".", "Echo")
+                tg.start_soon(
+                    process_manager.start_process, ["echo", "test"], ".", "Echo", 5
+                )
                 tg.start_soon(process_manager.stop_process, p1.pid)
 
             processes = await process_manager.list_processes()
@@ -651,7 +677,9 @@ class ProcessManagerTestBase(ABC):
         try:
             processes = []
             for i in range(5):
-                p = await process_manager.start_process(["echo", f"clean {i}"], ".", f"Clean {i}")
+                p = await process_manager.start_process(
+                    ["echo", f"clean {i}"], ".", f"Clean {i}", timeout=5
+                )
                 processes.append(p)
 
             for p in processes:
@@ -672,7 +700,9 @@ class ProcessManagerTestBase(ABC):
         """Test that CommandExecutionError is raised when stdin_data encoding fails."""
         process_manager = await self.create_process_manager(mock_output_manager)
         try:
-            unicode_input = "这是无法用ascii编码的中文"  # Characters not encodable in ascii
+            unicode_input = (
+                "这是无法用ascii编码的中文"  # Characters not encodable in ascii
+            )
             command = [
                 sys.executable,
                 os.path.join(
@@ -687,12 +717,16 @@ class ProcessManagerTestBase(ABC):
                     description="Test invalid encoding stdin",
                     stdin_data=unicode_input,
                     encoding="ascii",  # Encoding that cannot handle Chinese characters
+                    timeout=5,
                 )
             assert "Failed to encode stdin_data" in str(exc_info.value)
         finally:
             await self.cleanup_process_manager(process_manager)
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="stdin write failure simulation not reliable on Windows")
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="stdin write failure simulation not reliable on Windows",
+    )
     async def test_start_process_with_stdin_write_failure(
         self, mock_output_manager: IOutputManager, mocker
     ):
@@ -700,7 +734,7 @@ class ProcessManagerTestBase(ABC):
         process_manager = await self.create_process_manager(mock_output_manager)
         try:
             stdin_data = b"test data"
-            command = [sys.executable, '-c', 'import sys; sys.stdin.close()']
+            command = [sys.executable, "-c", "import sys; sys.stdin.close()"]
 
             with pytest.raises(CommandExecutionError) as exc_info:
                 await process_manager.start_process(
@@ -709,11 +743,79 @@ class ProcessManagerTestBase(ABC):
                     description="Test stdin write failure",
                     stdin_data=stdin_data,
                     encoding="utf-8",
+                    timeout=5,
                 )
             assert "Failed to write stdin_data" in str(exc_info.value)
         finally:
             await self.cleanup_process_manager(process_manager)
 
+    async def test_process_timeout_with_unresponsive_program(self, mock_output_manager: IOutputManager):
+        """Test that timeout forces termination of an unresponsive process."""
+        process_manager = await self.create_process_manager(mock_output_manager)
+        try:
+            command = [
+                sys.executable,
+                os.path.join(
+                    "tests", "mcp_os_server", "command", "cmd_for_test.py"
+                ),
+                "loop",
+                "10",  # Loop for 10 seconds
+            ]
+            process = await process_manager.start_process(
+                command=command,
+                directory=".",
+                description="Test unresponsive timeout",
+                timeout=1,  # Short timeout
+            )
+
+            with pytest.raises(ProcessTimeoutError):
+                await process.wait_for_completion()
+            completed_info = await process.get_details()
+            assert completed_info.status == ProcessStatus.TERMINATED
+            assert "timed out" in (completed_info.error_message or "").lower()
+
+            # Check exit code indicates forced termination
+            assert completed_info.exit_code is not None
+            if sys.platform != "win32":
+                assert completed_info.exit_code < 0
+            else:
+                assert completed_info.exit_code > 0
+        finally:
+            await self.cleanup_process_manager(process_manager)
+
+    @pytest.mark.timeout(25)  # Give this test more time due to retention waiting
+    async def test_process_timeout_with_unresponsive_program_1(self, mock_output_manager: IOutputManager):
+        """Test that timeout forces termination of an unresponsive process."""
+        process_manager = await self.create_process_manager(mock_output_manager)
+        try:
+            PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+            command = [
+                "uv",
+                "--project", str(PROJECT_ROOT),
+                "--directory", str(PROJECT_ROOT),
+                "run", "python", "build_executable.py",
+            ]
+            process = await process_manager.start_process(
+                command=command,
+                directory=".",
+                description="Test unresponsive timeout",
+                timeout=5,  # Short timeout
+            )
+
+            with pytest.raises(ProcessTimeoutError):
+                await process.wait_for_completion()
+            completed_info = await process.get_details()
+            assert completed_info.status == ProcessStatus.TERMINATED
+            assert "timed out" in (completed_info.error_message or "").lower()
+
+            # Check exit code indicates forced termination
+            assert completed_info.exit_code is not None
+            if sys.platform != "win32":
+                assert completed_info.exit_code < 0
+            else:
+                assert completed_info.exit_code > 0
+        finally:
+            await self.cleanup_process_manager(process_manager)
 
 class TestAnyioProcessManager(ProcessManagerTestBase):
     async def create_process_manager(
@@ -734,4 +836,3 @@ class TestAnyioProcessManager(ProcessManagerTestBase):
 
     async def cleanup_process_manager(self, process_manager: IProcessManager) -> None:
         await process_manager.shutdown()
-

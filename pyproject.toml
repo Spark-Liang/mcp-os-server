@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.11"
 dependencies = [
+    "anyio>=4.9.0",
     "asyncio>=3.4.3",
     "click>=8.1.7",
     "fastapi>=0.115.14",
@@ -15,6 +16,7 @@ dependencies = [
     "loguru>=0.7.3",
     "mcp>=1.8.1",
     "pillow>=11.2.1",
+    "psutil>=7.0.0",
     "pydantic>=2.10.3",
     "pyyaml>=6.0.2",
     "uvicorn>=0.34.3",
@@ -63,6 +65,11 @@ filterwarnings = [
     "ignore::RuntimeWarning:selectors:",
     "ignore::pytest.PytestUnraisableExceptionWarning:",
     "ignore::DeprecationWarning:pytest_asyncio.plugin:",
+]
+# 这是 Pytest 的配置部分
+# 指定 AnyIO 的默认后端
+anyio_backends = [
+    "asyncio",
 ]
 
 [tool.ruff]

@@ -1,21 +1,19 @@
-import anyio
 import logging
 import re
 from datetime import datetime
 from typing import Dict, List, Optional, Sequence
 
+import anyio
 from mcp.server.fastmcp import FastMCP
 from mcp.types import TextContent
 from pydantic import Field
 
 from .exceptions import (
     CommandExecutionError,
-    CommandTimeoutError,
     ProcessControlError,
     ProcessNotFoundError,
     ProcessTimeoutError,
 )
-from .execute_command_utils import execute_command
 from .interfaces import IProcessManager
 from .models import ProcessStatus
 
@@ -154,16 +152,22 @@ def define_mcp_server(
                 encoding=effective_encoding,
             )
 
+            logger.info("Waiting for process completion: %s", process.pid)
             info = await process.wait_for_completion()
+            logger.info("Process completed: %s", process.pid)
 
             try:
-                stdout_lines = [entry.text async for entry in process.get_output('stdout')]
-                stderr_lines = [entry.text async for entry in process.get_output('stderr')]
-                stdout = '\n'.join(stdout_lines)
-                stderr = '\n'.join(stderr_lines)
+                stdout_lines = [
+                    entry.text async for entry in process.get_output("stdout")
+                ]
+                stderr_lines = [
+                    entry.text async for entry in process.get_output("stderr")
+                ]
+                stdout = "\n".join(stdout_lines)
+                stderr = "\n".join(stderr_lines)
             except ProcessNotFoundError:
-                stdout = ''
-                stderr = ''
+                stdout = ""
+                stderr = ""
 
             # Always return 3 TextContent items as per FDS specification
             return [
@@ -174,13 +178,17 @@ def define_mcp_server(
         except ProcessTimeoutError:
             # Collect partial outputs
             try:
-                stdout_lines = [entry.text async for entry in process.get_output('stdout')]
-                stderr_lines = [entry.text async for entry in process.get_output('stderr')]
-                stdout = '\n'.join(stdout_lines)
-                stderr = '\n'.join(stderr_lines)
+                stdout_lines = [
+                    entry.text async for entry in process.get_output("stdout")
+                ]
+                stderr_lines = [
+                    entry.text async for entry in process.get_output("stderr")
+                ]
+                stdout = "\n".join(stdout_lines)
+                stderr = "\n".join(stderr_lines)
             except ProcessNotFoundError:
-                stdout = ''
-                stderr = ''
+                stdout = ""
+                stderr = ""
 
             # 超时时返回4个TextContent，类似正常执行但包含额外的指导信息
             return [
@@ -441,7 +449,9 @@ def define_mcp_server(
             if with_stdout:
                 try:
                     stdout_logs = []
-                    async for log_entry in process.get_output("stdout", since_ts, until_ts, tail_int):
+                    async for log_entry in process.get_output(
+                        "stdout", since_ts, until_ts, tail_int
+                    ):
                         stdout_logs.append(log_entry)
 
                     if stdout_logs:
@@ -475,7 +485,9 @@ def define_mcp_server(
             if with_stderr:
                 try:
                     stderr_logs = []
-                    async for log_entry in process.get_output("stderr", since_ts, until_ts, tail_int):
+                    async for log_entry in process.get_output(
+                        "stderr", since_ts, until_ts, tail_int
+                    ):
                         stderr_logs.append(log_entry)
 
                     if stderr_logs:
@@ -519,7 +531,7 @@ def define_mcp_server(
 
             return result_contents
 
-        except ProcessNotFoundError as e:
+        except ProcessNotFoundError:
             return [TextContent(type="text", text=f"Process with ID {pid} not found")]
         except Exception as e:
             return [TextContent(type="text", text=f"An error occurred: {e}")]
@@ -578,13 +590,14 @@ def define_mcp_server(
                 f"- **Duration**: {duration}\n\n"
                 f"#### Execution Information\n"
                 f"- **Working Directory**: {p.directory}\n"
-                f"- **Exit Code**: {p.exit_code if p.exit_code is not None else 'N/A'}\n\n"
+                f"- **Exit Code**: {p.exit_code if p.exit_code is not None else 'N/A'}\n"
+                f"- **Error Message**: {p.error_message if p.error_message else 'N/A'}\n\n"
                 f"#### Output Information\n"
                 f"- Use `command_ps_logs` to view process output.\n"
                 f'- Example: `command_ps_logs(pid="{p.pid}")`'
             )
             return [TextContent(type="text", text=details)]
-        except ProcessNotFoundError as e:
+        except ProcessNotFoundError:
             return [TextContent(type="text", text=f"Process with ID {pid} not found")]
         except Exception as e:
             return [TextContent(type="text", text=f"An error occurred: {e}")]

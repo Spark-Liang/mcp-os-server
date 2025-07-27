@@ -267,8 +267,8 @@ class IProcessManager(Protocol):
         command: List[str],
         directory: str,
         description: str,
+        timeout: int,
         stdin_data: Optional[bytes | str] = None,
-        timeout: Optional[int] = None,
         envs: Optional[Dict[str, str]] = None,
         encoding: str = sys.getdefaultencoding(),
         labels: Optional[List[str]] = None,
@@ -283,7 +283,7 @@ class IProcessManager(Protocol):
             stdin_data (Optional[bytes | str]): Input byte data to pass to the command via stdin.
                 If stdin_data is a string, it will be encoded to bytes using the encoding parameter.
                 If stdin_data is bytes, it will be passed to the command via stdin.
-            timeout (Optional[int]): Maximum execution time in seconds.
+            timeout (int): Maximum execution time in seconds.
             envs (Optional[Dict[str, str]]): Additional environment variables for the command.
             encoding (Optional[str]): Character encoding for the command's output.
             labels (Optional[List[str]]): A list of labels for process classification.

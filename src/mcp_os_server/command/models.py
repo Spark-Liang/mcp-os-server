@@ -47,6 +47,12 @@ class ProcessStatus(str, enum.Enum):
     ERROR = "error"
     """The process is in an error state, usually due the execution of the process manager."""
 
+    @staticmethod
+    def is_final(status: "ProcessStatus") -> bool:
+        return status in [
+            ProcessStatus.COMPLETED, ProcessStatus.FAILED, ProcessStatus.TERMINATED, ProcessStatus.ERROR
+        ]
+
 class ProcessInfo(BaseModel):
     """
     Detailed information about a process.
@@ -68,8 +74,8 @@ class ProcessInfo(BaseModel):
     labels: Sequence[str] = Field(
         [], description="List of labels for process classification"
     )
-    timeout: Optional[int] = Field(
-        None, description="Maximum execution time in seconds"
+    timeout: int = Field(
+        ..., description="Maximum execution time in seconds"
     )
     error_message: Optional[str] = Field(
         None, description="Error message encountered by the process"

@@ -28,8 +28,8 @@ from .filesystem.server import create_server as create_filesystem_server
 from .filtered_fast_mcp import FilteredFastMCP
 
 
-def setup_logger(mode: str) -> logging.Logger:
-    """Setup logger based on server mode."""
+def setup_logger(mode: str, debug: bool = False) -> logging.Logger:
+    """Setup logger based on server mode and debug flag."""
     logger = logging.getLogger("mcp_os_server")
 
     # Remove existing handlers
@@ -43,13 +43,27 @@ def setup_logger(mode: str) -> logging.Logger:
     else:
         stream = sys.stdout
 
+    if debug:
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+
     handler = logging.StreamHandler(stream)
     formatter = logging.Formatter(
-        "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+        "%(asctime)s - %(levelname)s - %(name)s:%(lineno)d - %(message)s"
     )
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
+    # 通过 LOG_FILE_PATH 配置文件路径
+    log_file_path = os.getenv("LOG_FILE_PATH")
+    if log_file_path:
+        file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    logger.setLevel(level)
+    logger.debug(f"debug: {debug}")
     logger.info(f"sys.getdefaultencoding(): {sys.getdefaultencoding()}")
     logger.info(f"sys.getfilesystemencoding(): {sys.getfilesystemencoding()}")
 
@@ -250,11 +264,11 @@ async def _run_unified_server(
     web_host: str,
     web_port: int,
     enable_web_manager: bool,
-    web_debug: bool,
+    debug: bool,
 ):
     """Run both command and filesystem servers in the specified mode."""
     # Setup logger based on mode
-    logger = setup_logger(mode)
+    logger = setup_logger(mode, debug)
 
     temp_dir_obj: Optional[tempfile.TemporaryDirectory] = None
 
@@ -324,7 +338,7 @@ async def _run_unified_server(
         try:
             web_manager = await create_web_manager(process_manager)
             await web_manager.start_web_interface(
-                host=web_host, port=web_port, debug=web_debug
+                host=web_host, port=web_port, debug=debug
             )
             logger.info(
                 "Web management interface available at: http://%s:%s",
@@ -507,10 +521,10 @@ def main():
     help="Enable web management interface",
 )
 @click.option(
-    "--web-debug",
+    "--debug",
     is_flag=True,
     default=False,
-    help="Use Flask development server for web interface (shows debug info)",
+    help="Enable debug mode (sets logging to DEBUG and uses Flask development server for web interface)",
 )
 def command_server(
     mode: str,
@@ -521,7 +535,7 @@ def command_server(
     web_host: str,
     web_port: int,
     enable_web_manager: bool,
-    web_debug: bool,
+    debug: bool,
 ):
     """Start the MCP Command Server with optional web management interface."""
     asyncio.run(
@@ -534,7 +548,7 @@ def command_server(
             web_host,
             web_port,
             enable_web_manager,
-            web_debug,
+            debug,
         )
     )
 
@@ -548,11 +562,11 @@ async def _run_command_server(
     web_host: str,
     web_port: int,
     enable_web_manager: bool,
-    web_debug: bool,
+    debug: bool,
 ):
     """Run the command server in the specified mode."""
     # Setup logger based on mode
-    logger = setup_logger(mode)
+    logger = setup_logger(mode, debug)
 
     temp_dir_obj: Optional[tempfile.TemporaryDirectory] = None
 
@@ -608,7 +622,7 @@ async def _run_command_server(
         try:
             web_manager = await create_web_manager(process_manager)
             await web_manager.start_web_interface(
-                host=web_host, port=web_port, debug=web_debug
+                host=web_host, port=web_port, debug=debug
             )
             logger.info(
                 "Web management interface available at: http://%s:%s",
@@ -800,10 +814,10 @@ def filesystem_server(
     help="Enable web management interface",
 )
 @click.option(
-    "--web-debug",
+    "--debug",
     is_flag=True,
     default=False,
-    help="Use Flask development server for web interface (shows debug info)",
+    help="Enable debug mode (sets logging to DEBUG and uses Flask development server for web interface)",
 )
 def unified_server(
     mode: str,
@@ -814,7 +828,7 @@ def unified_server(
     web_host: str,
     web_port: int,
     enable_web_manager: bool,
-    web_debug: bool,
+    debug: bool,
 ):
     """Start the MCP Unified Server with both command and filesystem capabilities."""
     asyncio.run(
@@ -827,7 +841,7 @@ def unified_server(
             web_host,
             web_port,
             enable_web_manager,
-            web_debug,
+            debug,
         )
     )
 
