@@ -1,23 +1,16 @@
 """核心文件系统服务类"""
 
 import asyncio
+import fnmatch
 import glob
 import logging
 import os
 import shutil
-import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
-import fnmatch
+from typing import Dict, List, Optional, Sequence
 
-from .models import (
-    FileReadResult, 
-    DirectoryItem, 
-    FileInfo, 
-    EditChange, 
-    FileEditResult
-)
+from .models import DirectoryItem, EditChange, FileEditResult, FileInfo, FileReadResult
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +39,7 @@ class FilesystemService:
             abs_path = Path(dir_path).resolve()
             resolved_dirs.append(abs_path)
         self._allowed_dirs = resolved_dirs
-        
+
         logger.info("初始化文件系统服务，允许的目录: %s", self._allowed_dirs)
         if self._features:
             logger.info("启用的功能特性: %s", [f.name for f in self._features])
@@ -76,21 +69,24 @@ class FilesystemService:
         """
         # 检查是否启用了 SupportCursorDirectoryFormat 特性
         from .models import FileSystemServiceFeature
+
         support_cursor_format = any(
             f == FileSystemServiceFeature.SupportCursorDirectoryFormat
             for f in self._features
         )
-        
+
         # 如果启用了 Cursor 目录格式支持，需要进行路径转换
         # 严格匹配 /<盘符>: 格式，其中盘符必须是字母
-        if (support_cursor_format and 
-            path.startswith('/') and 
-            len(path) > 3 and 
-            path[2] == ':' and 
-            path[1].isalpha()):
+        if (
+            support_cursor_format
+            and path.startswith("/")
+            and len(path) > 3
+            and path[2] == ":"
+            and path[1].isalpha()
+        ):
             # 处理 /e:/... 格式的路径，转换为 e:/...
             path = path[1:]
-        
+
         # 将传入路径转换为Path对象并标准化
         abs_path = Path(path).resolve()
 
@@ -160,9 +156,13 @@ class FilesystemService:
         for path in paths:
             try:
                 content = await self.read_file(path)
-                results[path] = FileReadResult(success=True, content=content, error=None)
+                results[path] = FileReadResult(
+                    success=True, content=content, error=None
+                )
             except Exception as e:
-                results[path] = FileReadResult(success=False, content=None, error=str(e))
+                results[path] = FileReadResult(
+                    success=False, content=None, error=str(e)
+                )
 
         return results
 
@@ -227,11 +227,13 @@ class FilesystemService:
             for item_name in os.listdir(resolved_path):
                 item_path = os.path.join(resolved_path, item_name)
                 is_dir = os.path.isdir(item_path)
-                items.append(DirectoryItem(
-                    name=item_name,
-                    type="directory" if is_dir else "file",
-                    path=item_path
-                ))
+                items.append(
+                    DirectoryItem(
+                        name=item_name,
+                        type="directory" if is_dir else "file",
+                        path=item_path,
+                    )
+                )
             return sorted(items, key=lambda x: (x.type == "file", x.name))
 
         loop = asyncio.get_event_loop()
@@ -292,9 +294,7 @@ class FilesystemService:
                 should_exclude = False
                 if exclude_patterns:
                     for exclude_pattern in exclude_patterns:
-                        if fnmatch.fnmatch(
-                            os.path.basename(match), exclude_pattern
-                        ):
+                        if fnmatch.fnmatch(os.path.basename(match), exclude_pattern):
                             should_exclude = True
                             break
 
@@ -332,7 +332,7 @@ class FilesystemService:
                 modified=datetime.fromtimestamp(stat_result.st_mtime).isoformat(),
                 accessed=datetime.fromtimestamp(stat_result.st_atime).isoformat(),
                 permissions=oct(stat_result.st_mode)[-3:],
-                absolute_path=os.path.abspath(resolved_path)
+                absolute_path=os.path.abspath(resolved_path),
             )
 
         loop = asyncio.get_event_loop()
@@ -383,23 +383,22 @@ class FilesystemService:
 
                 if old_text in modified_content:
                     modified_content = modified_content.replace(old_text, new_text, 1)
-                    changes_made.append(EditChange(
-                        old=old_text,
-                        new=new_text,
-                        applied=True,
-                        error=None
-                    ))
+                    changes_made.append(
+                        EditChange(old=old_text, new=new_text, applied=True, error=None)
+                    )
                 else:
-                    changes_made.append(EditChange(
-                        old=old_text,
-                        new=new_text,
-                        applied=False,
-                        error="未找到匹配的文本"
-                    ))
+                    changes_made.append(
+                        EditChange(
+                            old=old_text,
+                            new=new_text,
+                            applied=False,
+                            error="未找到匹配的文本",
+                        )
+                    )
 
             result_data = {
                 "changes_made": changes_made,
-                "content_changed": modified_content != original_content
+                "content_changed": modified_content != original_content,
             }
 
             if dry_run:

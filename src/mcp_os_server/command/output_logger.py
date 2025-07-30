@@ -1,16 +1,14 @@
-import asyncio
-from datetime import datetime, timezone
 import os
 import re
-from typing import AsyncGenerator, Dict, List, Optional, Union
-import yaml
 import sqlite3
-import time
 import threading
+from datetime import datetime, timezone
+from typing import AsyncGenerator, List, Optional
 
-from .interfaces import IOutputLogger, IOutputManager
-from .models import MessageEntry, OutputMessageEntry
-from .exceptions import ProcessNotFoundError, OutputRetrievalError, OutputClearError, StorageError
+import yaml
+
+from .interfaces import IOutputLogger
+from .models import MessageEntry
 
 
 class YamlOutputLogger(IOutputLogger):
@@ -27,22 +25,30 @@ class YamlOutputLogger(IOutputLogger):
 
     def _ensure_log_file_exists(self):
         if not os.path.exists(self.log_file_path):
-            with open(self.log_file_path, 'w', encoding='utf-8') as f:
+            with open(self.log_file_path, "w", encoding="utf-8") as f:
                 yaml.dump([], f)
 
     def add_message(self, message: str, timestamp: Optional[datetime] = None) -> None:
         self.add_messages([message], timestamp)
 
-    def add_messages(self, messages: List[str], timestamp: Optional[datetime] = None) -> None:
+    def add_messages(
+        self, messages: List[str], timestamp: Optional[datetime] = None
+    ) -> None:
         current_data = self._read_logs()
         for message in messages:
             entry = MessageEntry(
-                timestamp=timestamp if timestamp else datetime.now(),
-                text=message
+                timestamp=timestamp if timestamp else datetime.now(), text=message
             )
-            current_data.append(entry.model_dump(mode='json'))
-        with open(self.log_file_path, 'w', encoding='utf-8') as f:
-            yaml.dump(current_data, f, sort_keys=False, default_flow_style=False, default_style='|', allow_unicode=True)
+            current_data.append(entry.model_dump(mode="json"))
+        with open(self.log_file_path, "w", encoding="utf-8") as f:
+            yaml.dump(
+                current_data,
+                f,
+                sort_keys=False,
+                default_flow_style=False,
+                default_style="|",
+                allow_unicode=True,
+            )
 
     async def get_logs(
         self,
@@ -70,7 +76,7 @@ class YamlOutputLogger(IOutputLogger):
     def _read_logs(self) -> List[dict]:
         if not os.path.exists(self.log_file_path):
             return []
-        with open(self.log_file_path, 'r', encoding='utf-8') as f:
+        with open(self.log_file_path, "r", encoding="utf-8") as f:
             try:
                 data = yaml.safe_load(f)
                 return data if data is not None else []
@@ -78,7 +84,7 @@ class YamlOutputLogger(IOutputLogger):
                 return []
 
     def close(self) -> None:
-        pass # No specific resources to close for file-based logger
+        pass  # No specific resources to close for file-based logger
 
     def __del__(self):
         """No-op as file handles are managed within methods."""
@@ -111,12 +117,14 @@ class SqliteOutputLogger(IOutputLogger):
             try:
                 with conn:
                     cursor = conn.cursor()
-                    cursor.execute(f"""
+                    cursor.execute(
+                        f"""
                         CREATE TABLE IF NOT EXISTS {self.table_name} (
                             timestamp REAL, -- Changed to REAL for Unix timestamp
                             text TEXT
                         )
-                    """)
+                    """
+                    )
                     conn.commit()
             finally:
                 conn.close()
@@ -124,17 +132,25 @@ class SqliteOutputLogger(IOutputLogger):
     def add_message(self, message: str, timestamp: Optional[datetime] = None) -> None:
         self.add_messages([message], timestamp)
 
-    def add_messages(self, messages: List[str], timestamp: Optional[datetime] = None) -> None:
+    def add_messages(
+        self, messages: List[str], timestamp: Optional[datetime] = None
+    ) -> None:
         with self._lock:
             conn = self._create_connection()
             try:
                 with conn:
                     cursor = conn.cursor()
-                    current_timestamp = timestamp if timestamp else datetime.now(timezone.utc)
+                    current_timestamp = (
+                        timestamp if timestamp else datetime.now(timezone.utc)
+                    )
                     data_to_insert = [
-                        (current_timestamp.timestamp(), message) for message in messages # Store as Unix timestamp
+                        (current_timestamp.timestamp(), message)
+                        for message in messages  # Store as Unix timestamp
                     ]
-                    cursor.executemany(f"INSERT INTO {self.table_name} (timestamp, text) VALUES (?, ?)", data_to_insert)
+                    cursor.executemany(
+                        f"INSERT INTO {self.table_name} (timestamp, text) VALUES (?, ?)",
+                        data_to_insert,
+                    )
                     conn.commit()
             finally:
                 conn.close()
@@ -154,26 +170,30 @@ class SqliteOutputLogger(IOutputLogger):
 
                 if since:
                     where_clauses.append("timestamp >= ?")
-                    params.append(since.timestamp()) # Compare with Unix timestamp
+                    params.append(since.timestamp())  # Compare with Unix timestamp
                 if until:
                     where_clauses.append("timestamp <= ?")
-                    params.append(until.timestamp()) # Compare with Unix timestamp
+                    params.append(until.timestamp())  # Compare with Unix timestamp
 
                 if where_clauses:
                     query += " WHERE " + " AND ".join(where_clauses)
-                
+
                 query += " ORDER BY timestamp ASC"
 
                 if tail is not None:
-                    pass # We will handle tail in Python after fetching all relevant logs
+                    pass  # We will handle tail in Python after fetching all relevant logs
 
                 all_logs = []
                 with conn:
                     cursor = conn.execute(query, params)
                     for row in cursor.fetchall():
                         # Convert Unix timestamp back to datetime
-                        timestamp = datetime.fromtimestamp(row['timestamp'], tz=timezone.utc) 
-                        all_logs.append(MessageEntry(timestamp=timestamp, text=row['text']))
+                        timestamp = datetime.fromtimestamp(
+                            row["timestamp"], tz=timezone.utc
+                        )
+                        all_logs.append(
+                            MessageEntry(timestamp=timestamp, text=row["text"])
+                        )
 
                 if tail is not None:
                     all_logs = all_logs[-tail:]
@@ -190,5 +210,3 @@ class SqliteOutputLogger(IOutputLogger):
     def __del__(self):
         """No cleanup needed since we don't maintain persistent connections."""
         pass
-
-

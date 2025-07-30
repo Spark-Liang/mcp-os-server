@@ -35,28 +35,28 @@ class TestFilesystemService:
         assert not service.is_path_allowed("/root/forbidden.txt")
         assert not service.is_path_allowed(str(temp_dir.parent / "outside.txt"))
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_read_file_success(self, sample_files):
         """测试成功读取文件"""
         service = FilesystemService([str(sample_files["temp_dir"])])
         content = await service.read_file(str(sample_files["test_file"]))
         assert content == "Hello, World!"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_read_file_not_allowed(self, sample_files):
         """测试读取不允许的文件"""
         service = FilesystemService([str(sample_files["temp_dir"])])
         with pytest.raises(PermissionError, match="路径不在允许的目录中"):
             await service.read_file("/etc/passwd")
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_read_file_not_found(self, sample_files):
         """测试读取不存在的文件"""
         service = FilesystemService([str(sample_files["temp_dir"])])
         with pytest.raises(FileNotFoundError):
             await service.read_file(str(sample_files["temp_dir"] / "not_exist.txt"))
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_write_file_success(self, sample_files):
         """测试成功写入文件"""
         service = FilesystemService([str(sample_files["temp_dir"])])
@@ -67,14 +67,14 @@ class TestFilesystemService:
         assert new_file.exists()
         assert new_file.read_text() == "New content"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_write_file_not_allowed(self, sample_files):
         """测试写入不允许的文件"""
         service = FilesystemService([str(sample_files["temp_dir"])])
         with pytest.raises(PermissionError, match="路径不在允许的目录中"):
             await service.write_file("/tmp/forbidden.txt", "content")
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_list_directory_success(self, sample_files):
         """测试成功列出目录内容"""
         service = FilesystemService([str(sample_files["temp_dir"])])
@@ -86,7 +86,7 @@ class TestFilesystemService:
         assert "subdir" in item_names
         assert "data.json" in item_names
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_create_directory_success(self, sample_files):
         """测试成功创建目录"""
         service = FilesystemService([str(sample_files["temp_dir"])])
@@ -97,7 +97,7 @@ class TestFilesystemService:
         assert new_dir.exists()
         assert new_dir.is_dir()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_move_file_success(self, sample_files):
         """测试成功移动文件"""
         service = FilesystemService([str(sample_files["temp_dir"])])
@@ -110,7 +110,7 @@ class TestFilesystemService:
         assert destination.exists()
         assert destination.read_text() == "Hello, World!"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_search_files_success(self, sample_files):
         """测试成功搜索文件"""
         service = FilesystemService([str(sample_files["temp_dir"])])
@@ -121,7 +121,7 @@ class TestFilesystemService:
         assert "test.txt" in result_names
         assert "nested.txt" in result_names
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_get_file_info_success(self, sample_files):
         """测试成功获取文件信息"""
         service = FilesystemService([str(sample_files["temp_dir"])])
@@ -139,58 +139,58 @@ class TestFilesystemService:
         # 启用 SupportCursorDirectoryFormat 功能
         features = [FileSystemServiceFeature.SupportCursorDirectoryFormat]
         service = FilesystemService([str(temp_dir)], features=features)
-        
+
         # 获取当前盘符
         current_drive = str(temp_dir)[:2]  # 例如：'C:'
         drive_letter = current_drive[0].lower()  # 例如：'c'
-        
+
         # 测试 Cursor 格式路径应该被转换并允许访问
         cursor_path = f"/{drive_letter}:{str(temp_dir)[2:]}/test.txt"
         assert service.is_path_allowed(cursor_path)
-        
+
         # 测试不同盘符的情况
-        if drive_letter != 'e':
+        if drive_letter != "e":
             cursor_path_e = f"/e:{str(temp_dir)[2:]}/test.txt"
             # 这个路径应该不被允许，因为盘符不匹配
             assert not service.is_path_allowed(cursor_path_e)
-    
+
     @pytest.mark.skipif(os.name != "nt", reason="Cursor 目录格式只在 Windows 上支持")
     def test_cursor_directory_format_disabled(self, temp_dir):
         """测试不启用 SupportCursorDirectoryFormat 功能时的行为"""
         # 不启用 SupportCursorDirectoryFormat 功能
         service = FilesystemService([str(temp_dir)])
-        
+
         # 获取当前盘符
         current_drive = str(temp_dir)[:2]  # 例如：'C:'
         drive_letter = current_drive[0].lower()  # 例如：'c'
-        
+
         # 测试 Cursor 格式路径应该被当作普通路径处理，不被允许
         cursor_path = f"/{drive_letter}:{str(temp_dir)[2:]}/test.txt"
         assert not service.is_path_allowed(cursor_path)
-    
+
     @pytest.mark.skipif(os.name != "nt", reason="Cursor 目录格式只在 Windows 上支持")
     def test_cursor_directory_format_edge_cases(self, temp_dir):
         """测试 Cursor 目录格式的边界情况"""
         # 启用 SupportCursorDirectoryFormat 功能
         features = [FileSystemServiceFeature.SupportCursorDirectoryFormat]
         service = FilesystemService([str(temp_dir)], features=features)
-        
+
         # 测试只是 / 开头但不是盘符格式的路径，应该不被转换
         assert not service.is_path_allowed("/usr/local/test.txt")
         assert not service.is_path_allowed("/home/user/test.txt")
-        
+
         # 测试格式不正确的路径
         assert not service.is_path_allowed("/e/test.txt")  # 缺少冒号
         assert not service.is_path_allowed("/12:/test.txt")  # 非字母盘符
         assert not service.is_path_allowed("/")  # 只有根路径
         assert not service.is_path_allowed("/e:")  # 只有盘符，没有路径
-    
+
     def test_cursor_directory_format_pattern_validation(self, temp_dir):
         """测试 Cursor 目录格式的模式验证"""
         # 启用 SupportCursorDirectoryFormat 功能
         features = [FileSystemServiceFeature.SupportCursorDirectoryFormat]
         service = FilesystemService([str(temp_dir)], features=features)
-        
+
         # 测试严格的模式匹配：开头必须是 /<盘符>:
         test_cases = [
             ("/e:/Programming/Demo/file.txt", True),  # 正确格式
@@ -204,13 +204,15 @@ class TestFilesystemService:
             ("/:/test.txt", False),  # 空盘符
             ("/", False),  # 只有根路径
         ]
-        
+
         for path, should_match_pattern in test_cases:
             # 检查是否匹配 Cursor 格式模式
             matches_cursor_pattern = (
-                path.startswith('/') and 
-                len(path) > 3 and 
-                path[2] == ':' and 
-                path[1].isalpha()
+                path.startswith("/")
+                and len(path) > 3
+                and path[2] == ":"
+                and path[1].isalpha()
             )
-            assert matches_cursor_pattern == should_match_pattern, f"路径 {path} 的模式匹配结果不正确"
+            assert (
+                matches_cursor_pattern == should_match_pattern
+            ), f"路径 {path} 的模式匹配结果不正确"

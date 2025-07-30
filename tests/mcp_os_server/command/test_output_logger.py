@@ -2,15 +2,14 @@ import asyncio
 import os
 import tempfile
 from datetime import datetime, timedelta
-from typing import AsyncGenerator, Generator, Type
+from typing import Generator
 
 import pytest
 import yaml
 
 from mcp_os_server.command.interfaces import IOutputLogger
 from mcp_os_server.command.models import MessageEntry
-from mcp_os_server.command.output_logger import YamlOutputLogger
-from mcp_os_server.command.output_logger import SqliteOutputLogger
+from mcp_os_server.command.output_logger import SqliteOutputLogger, YamlOutputLogger
 
 
 class BaseTestOutputLogger:
@@ -19,7 +18,7 @@ class BaseTestOutputLogger:
     Subclasses must provide a 'logger' fixture that yields an IOutputLogger instance.
     """
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_add_single_message(self, logger: IOutputLogger):
         """Test adding a single message."""
         test_message = "Hello, World!"
@@ -31,7 +30,7 @@ class BaseTestOutputLogger:
         assert retrieved_logs[0].text == test_message
         assert isinstance(retrieved_logs[0].timestamp, datetime)
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_add_multiple_messages(self, logger: IOutputLogger):
         """Test adding multiple messages."""
         messages = ["First message", "Second message", "Third message"]
@@ -42,32 +41,32 @@ class BaseTestOutputLogger:
         assert len(retrieved_logs) == 3
         assert [entry.text for entry in retrieved_logs] == messages
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_get_logs_all(self, logger: IOutputLogger):
         """Test getting all logs."""
         messages = ["Log 1", "Log 2"]
         logger.add_messages(messages)
 
         retrieved_logs: list[MessageEntry] = [log async for log in logger.get_logs()]
-        
+
         assert len(retrieved_logs) == 2
         assert retrieved_logs[0].text == "Log 1"
         assert retrieved_logs[1].text == "Log 2"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_get_logs_with_tail(self, logger: IOutputLogger):
         """Test the 'tail' parameter for getting logs."""
         messages = [f"Message {i}" for i in range(10)]
         logger.add_messages(messages)
 
         retrieved_logs = [log async for log in logger.get_logs(tail=3)]
-        
+
         assert len(retrieved_logs) == 3
         assert retrieved_logs[0].text == "Message 7"
         assert retrieved_logs[1].text == "Message 8"
         assert retrieved_logs[2].text == "Message 9"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_get_logs_with_since_until(self, logger: IOutputLogger):
         """Test filtering logs with 'since' and 'until' parameters."""
         logger.add_message("Message 1")
@@ -75,21 +74,25 @@ class BaseTestOutputLogger:
         logger.add_message("Message 2 (target)")
         await asyncio.sleep(0.01)
         logger.add_message("Message 3")
-        
+
         all_logs = [log async for log in logger.get_logs()]
-        
+
         assert len(all_logs) == 3
-        
+
         since_time = all_logs[0].timestamp + timedelta(microseconds=1)
         until_time = all_logs[2].timestamp - timedelta(microseconds=1)
-        
-        retrieved_logs = [log async for log in logger.get_logs(since=since_time, until=until_time)]
-        
+
+        retrieved_logs = [
+            log async for log in logger.get_logs(since=since_time, until=until_time)
+        ]
+
         assert len(retrieved_logs) == 1
         assert retrieved_logs[0].text == "Message 2 (target)"
 
-    @pytest.mark.asyncio
-    async def test_add_message_with_special_characters_and_newlines(self, logger: IOutputLogger):
+    @pytest.mark.anyio
+    async def test_add_message_with_special_characters_and_newlines(
+        self, logger: IOutputLogger
+    ):
         """Test adding a message with special characters and newlines."""
         special_message = (
             "This is a test message with special characters:\n"
@@ -98,7 +101,7 @@ class BaseTestOutputLogger:
             "  - Newlines: \n\nThis part is after a double newline.\n"
             "End of message."
         )
-        
+
         logger.add_message(special_message)
         logger.close()
 
@@ -134,15 +137,17 @@ class TestYamlOutputLogger(BaseTestOutputLogger):
         """Helper to read the yaml log file."""
         if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
             return []
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             try:
                 data = yaml.safe_load(f)
                 return data if data is not None else []
             except yaml.YAMLError:
                 return []
 
-    @pytest.mark.asyncio
-    async def test_multi_line_format_in_yaml(self, logger: IOutputLogger, temp_log_file: str):
+    @pytest.mark.anyio
+    async def test_multi_line_format_in_yaml(
+        self, logger: IOutputLogger, temp_log_file: str
+    ):
         """Test that multi-line messages are formatted correctly in YAML."""
         multi_line_message = "Line 1\nLine 2\nLine 3"
         logger.add_message(multi_line_message)
@@ -150,13 +155,13 @@ class TestYamlOutputLogger(BaseTestOutputLogger):
 
         log_entries = self._read_yaml_file(temp_log_file)
         assert len(log_entries) == 1
-        assert log_entries[0]['text'] == multi_line_message
+        assert log_entries[0]["text"] == multi_line_message
         # Verify it was written as a literal block scalar
-        with open(temp_log_file, 'r', encoding='utf-8') as f:
+        with open(temp_log_file, "r", encoding="utf-8") as f:
             content = f.read()
             assert "|-\n" in content
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_close_and_reopen_logger(self, temp_log_file: str):
         """Test that the log file is handled correctly on close and reopen."""
         # First logger instance
@@ -164,7 +169,7 @@ class TestYamlOutputLogger(BaseTestOutputLogger):
         assert os.path.exists(temp_log_file)
         logger1.add_message("A message to create the file.")
         logger1.close()
-        
+
         # After closing, the file should still exist and contain the message
         assert os.path.exists(temp_log_file)
         log_entries = self._read_yaml_file(temp_log_file)
@@ -177,8 +182,8 @@ class TestYamlOutputLogger(BaseTestOutputLogger):
 
         all_logs = self._read_yaml_file(temp_log_file)
         assert len(all_logs) == 2
-        assert all_logs[0]['text'] == "A message to create the file."
-        assert all_logs[1]['text'] == "Second message."
+        assert all_logs[0]["text"] == "A message to create the file."
+        assert all_logs[1]["text"] == "Second message."
 
 
 class TestSqliteOutputLogger(BaseTestOutputLogger):
@@ -204,7 +209,7 @@ class TestSqliteOutputLogger(BaseTestOutputLogger):
         yield log_instance
         log_instance.close()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_multi_sub_id_isolation(self, temp_db_file: str):
         """Test that different sub_ids create isolated tables."""
         logger1 = SqliteOutputLogger(temp_db_file, sub_id="proc1_stdout")
@@ -220,14 +225,29 @@ class TestSqliteOutputLogger(BaseTestOutputLogger):
         logger3.close()
 
         # Verify isolation
-        retrieved_logs_1 = [log async for log in SqliteOutputLogger(temp_db_file, sub_id="proc1_stdout").get_logs()]
+        retrieved_logs_1 = [
+            log
+            async for log in SqliteOutputLogger(
+                temp_db_file, sub_id="proc1_stdout"
+            ).get_logs()
+        ]
         assert len(retrieved_logs_1) == 1
         assert retrieved_logs_1[0].text == "Message for proc1 stdout"
 
-        retrieved_logs_2 = [log async for log in SqliteOutputLogger(temp_db_file, sub_id="proc2_stdout").get_logs()]
+        retrieved_logs_2 = [
+            log
+            async for log in SqliteOutputLogger(
+                temp_db_file, sub_id="proc2_stdout"
+            ).get_logs()
+        ]
         assert len(retrieved_logs_2) == 1
         assert retrieved_logs_2[0].text == "Message for proc2 stdout"
-        
-        retrieved_logs_3 = [log async for log in SqliteOutputLogger(temp_db_file, sub_id="proc1_stderr").get_logs()]
+
+        retrieved_logs_3 = [
+            log
+            async for log in SqliteOutputLogger(
+                temp_db_file, sub_id="proc1_stderr"
+            ).get_logs()
+        ]
         assert len(retrieved_logs_3) == 1
-        assert retrieved_logs_3[0].text == "Message for proc1 stderr" 
+        assert retrieved_logs_3[0].text == "Message for proc1 stderr"

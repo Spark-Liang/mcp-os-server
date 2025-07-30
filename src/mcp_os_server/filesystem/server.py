@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from ..filtered_fast_mcp import FilteredFastMCP
-
 import io
 import json
 import logging
@@ -14,13 +12,9 @@ from mcp.server.fastmcp import FastMCP, Image
 from PIL import Image as PILImage
 from pydantic import Field
 
+from ..filtered_fast_mcp import FilteredFastMCP
 from .filesystem_service import FilesystemService
-from .models import (
-    FileReadResult,
-    DirectoryItem,
-    FileInfo,
-    FileEditResult
-)
+from .models import DirectoryItem, FileEditResult, FileInfo, FileReadResult
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +56,9 @@ def _do_load_image_by_pillow(path: str, max_bytes: Optional[int] = None) -> Imag
             )
 
         # 需要创建缩略图
-        logger.info("图片大小 %s 字节超过限制 %s 字节，创建缩略图", current_size, max_bytes)
+        logger.info(
+            "图片大小 %s 字节超过限制 %s 字节，创建缩略图", current_size, max_bytes
+        )
 
         # 计算缩放比例
         scale_ratio = (max_bytes / current_size) ** 0.5  # 开平方根获得线性缩放比例
@@ -92,7 +88,7 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
     def __load_image_by_pillow(path: str, max_bytes: Optional[int] = None) -> Image:
         """读取图片文件并转换为Image对象"""
         logger.info("读取图片文件: %s", path)
-        
+
         # 使用assert_is_allowed_and_resolve检查路径并获取解析后的Path对象
         resolved_path = filesystem_service.assert_is_allowed_and_resolve(path)
 
@@ -129,7 +125,9 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
     # ===== 工具 (Tools) =====
 
     @mcp.tool()
-    async def fs_read_file(path: str = Field(..., description="要读取的文件的绝对路径")) -> str:
+    async def fs_read_file(
+        path: str = Field(..., description="要读取的文件的绝对路径")
+    ) -> str:
         """
         读取文件内容
 
@@ -372,7 +370,9 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
             JSON格式的目录内容列表
         """
         items = await filesystem_service.list_directory(path)
-        return json.dumps([item.model_dump() for item in items], indent=2, ensure_ascii=False)
+        return json.dumps(
+            [item.model_dump() for item in items], indent=2, ensure_ascii=False
+        )
 
     @mcp.resource("config://filesystem")
     async def get_config_resource() -> str:
@@ -386,7 +386,12 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
         return json.dumps(await _do_get_filesystem_info(), indent=2, ensure_ascii=False)
 
 
-def create_server(allowed_dirs: List[str], features: Optional[List] = None, host: str = "127.0.0.1", port: int = 8000) -> "FilteredFastMCP":
+def create_server(
+    allowed_dirs: List[str],
+    features: Optional[List] = None,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+) -> "FilteredFastMCP":
     """
     创建并配置MCP文件系统服务器。
 

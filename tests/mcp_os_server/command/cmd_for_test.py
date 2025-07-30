@@ -103,7 +103,9 @@ def exit_cmd():
 
 def loop():
     # 实现一个死循环命令，用于测试超时
-    parser = argparse.ArgumentParser(description="Loop command to simulate high CPU load")
+    parser = argparse.ArgumentParser(
+        description="Loop command to simulate high CPU load"
+    )
     parser.add_argument("seconds", type=float, help="Seconds to loop for")
     args = parser.parse_args(sys.argv[1:])
 
@@ -111,21 +113,25 @@ def loop():
     while time.time() < end_time:
         # 密集计算，模拟高负载
         _ = 1 * 1
-        
+
     print("Loop finished naturally.")
 
 
 def multi_output():
     # 实现一个产生大量stdout和stderr输出的命令
     parser = argparse.ArgumentParser(description="Multi output command")
-    parser.add_argument("lines", type=int, default=10, nargs="?", help="Number of lines to output")
+    parser.add_argument(
+        "lines", type=int, default=10, nargs="?", help="Number of lines to output"
+    )
     parser.add_argument("--stderr", action="store_true", help="Also output to stderr")
     args = parser.parse_args(sys.argv[1:])
-    
+
     for i in range(args.lines):
         print(f"stdout line {i+1}: This is output line number {i+1}")
         if args.stderr:
-            print(f"stderr line {i+1}: This is error line number {i+1}", file=sys.stderr)
+            print(
+                f"stderr line {i+1}: This is error line number {i+1}", file=sys.stderr
+            )
         # 短暂延迟，模拟真实程序的输出模式
         time.sleep(0.01)
 
@@ -133,15 +139,23 @@ def multi_output():
 def fail_with_output():
     # 实现一个产生输出后以非零退出码退出的命令
     parser = argparse.ArgumentParser(description="Fail with output command")
-    parser.add_argument("lines", type=int, default=5, nargs="?", help="Number of lines to output before failing")
-    parser.add_argument("exit_code", type=int, default=1, nargs="?", help="Exit code to use")
+    parser.add_argument(
+        "lines",
+        type=int,
+        default=5,
+        nargs="?",
+        help="Number of lines to output before failing",
+    )
+    parser.add_argument(
+        "exit_code", type=int, default=1, nargs="?", help="Exit code to use"
+    )
     args = parser.parse_args(sys.argv[1:])
-    
+
     for i in range(args.lines):
         print(f"Output before failure line {i+1}")
         print(f"Error before failure line {i+1}", file=sys.stderr)
         time.sleep(0.01)
-    
+
     print("Process is about to fail")
     print("Final error message", file=sys.stderr)
     sys.exit(args.exit_code)
@@ -154,7 +168,16 @@ if __name__ == "__main__":
 
     # Command detection from arguments
     if len(sys.argv) > 1 and sys.argv[1] in [
-        "echo", "grep", "sleep", "cat", "binary_cat", "exit", "encode_echo", "loop", "multi_output", "fail_with_output"
+        "echo",
+        "grep",
+        "sleep",
+        "cat",
+        "binary_cat",
+        "exit",
+        "encode_echo",
+        "loop",
+        "multi_output",
+        "fail_with_output",
     ]:
         command = sys.argv[1]
         # Re-arrange sys.argv for argparse in functions

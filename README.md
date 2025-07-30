@@ -317,7 +317,7 @@ MCP OS Server 暴露了以下 MCP 工具，客户端可以通过它们与服务�
 ```json
 {
     "type": "text",
-    "text": "**exit with 0**"
+    "text": "**process 123 end with completed (exit code: 0)**"
 },
 {
     "type": "text",
@@ -833,8 +833,13 @@ MCP OS Server 暴露了以下 MCP 工具，客户端可以通过它们与服务�
 *  **使用 mcp inspector 测试**
 
     ```bash
-    npx -y @modelcontextprotocol/inspector@0.14.0 -e ALLOWED_COMMANDS=echo,dir,sleep -e ALLOWED_DIRS=E: uv run mcp-os-server command-server --mode stdio --enable-web-manager
+    npx -y @modelcontextprotocol/inspector@0.14.0 -e ALLOWED_COMMANDS=echo,dir,sleep,uv -e ALLOWED_DIRS=E: uv run mcp-os-server command-server --mode stdio --enable-web-manager
     ```
+    包含详细日志的调试测试命令：
+    ```bash
+    npx -y @modelcontextprotocol/inspector@0.14.0 -e LOG_FILE_PATH=E:\Programming\Github\Personal\mcp-os-server\.tmp\test.log -e ALLOWED_COMMANDS=echo,dir,sleep,uv -e ALLOWED_DIRS=E: uv run mcp-os-server command-server --mode stdio --enable-web-manager --debug
+    ```
+
 
 ### 构建可执行文件
 
