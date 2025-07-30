@@ -27,6 +27,7 @@ from .command.web_manager import WebManager
 from .filesystem.server import create_server as create_filesystem_server
 from .filtered_fast_mcp import FilteredFastMCP
 
+logger = logging.getLogger(__name__)
 
 def setup_logger(mode: str, debug: bool = False) -> logging.Logger:
     """Setup logger based on server mode and debug flag."""
@@ -99,10 +100,12 @@ def parse_command_default_encoding_map() -> Dict[str, str]:
 
     for env_key, env_value in os.environ.items():
         if env_key.startswith(prefix):
+            
             command_name = env_key[len(prefix) :]
             if command_name and env_value.strip():
                 command_encoding_map[command_name] = env_value.strip()
-
+    
+    logger.info(f"command_encoding_map: {command_encoding_map}")
     return command_encoding_map
 
 

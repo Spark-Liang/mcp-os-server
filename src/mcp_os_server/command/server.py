@@ -78,16 +78,18 @@ def define_mcp_server(
     """
 
     logger.info("Allowed commands: %s", allowed_commands)
+    logger.info("Command default encoding map: %s", command_default_encoding_map)
 
     def get_effective_encoding(
         command: str, user_encoding: Optional[str] = None
     ) -> str:
-        """Get the effective encoding for a command based on priority."""
+        """Get the effective encoding for a command based on priority. 注意使用大小写不敏感的方式查找"""
         # Priority: user_encoding > command_default_encoding_map > default_encoding
         if user_encoding:
             return user_encoding
-        if command in command_default_encoding_map:
-            return command_default_encoding_map[command]
+        for key, value in command_default_encoding_map.items():
+            if command.upper() == key.upper():
+                return value
         return default_encoding
 
     @mcp.tool()

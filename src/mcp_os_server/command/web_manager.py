@@ -602,6 +602,8 @@ class WebManager:
             ),
             "exit_code": process_info.exit_code,
             "directory": process_info.directory,
+            "encoding": process_info.encoding,
+            "envs": process_info.envs,
             "timeout": process_info.timeout,
             "labels": process_info.labels or [],
             "duration": duration,

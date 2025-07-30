@@ -359,6 +359,7 @@ class AnyioProcess(IProcess):
                 labels=self._labels,
                 timeout=self._timeout,
                 error_message=self._error_message,
+                encoding=self._encoding,
                 envs=self._envs,
             )
 
@@ -538,7 +539,7 @@ class AnyioProcessManager(IProcessManager):
             command = [executable_command] + command[1:]
             logger.debug("normalized command: %s", command)
 
-            logger.debug(f"Starting process:\ncommand: {command}\ndirectory: {directory}\nenv: {env}")
+            logger.debug(f"Starting process:\ncommand: {command}\ndirectory: {directory}\nencoding: {encoding}\nenv: {env}")
             if sys.platform == "win32":
                 creation_flags = subprocess.CREATE_NO_WINDOW
                 try:

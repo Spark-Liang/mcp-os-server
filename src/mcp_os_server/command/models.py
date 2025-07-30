@@ -63,6 +63,7 @@ class ProcessInfo(BaseModel):
     directory: str = Field(
         ..., description="Working directory for the command execution"
     )
+    encoding: str = Field(..., description="Encoding of the process")
     envs: Mapping[str, str] = Field(
         ..., description="Environment variables for the process"
     )
