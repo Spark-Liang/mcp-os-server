@@ -6,12 +6,25 @@ import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import AsyncGenerator, List, Optional, Sequence
+from datetime import datetime
 
 import anyio
 import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import TextContent
+
+import httpx
+from anyio import create_memory_object_stream
+import uuid
+import socket
+from contextvars import ContextVar
+
+def get_random_available_port() -> int:
+    """Gets a random available port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("", 0))
+        return sock.getsockname()[1]
 
 # Path to the helper script
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -156,8 +169,10 @@ def validate_command_success_format(
     if len(results) != 3:
         return False
 
-    # Check exit code (should be 0 for success)
-    if not results[0].text.strip() == "**exit with 0**":
+    # Check exit code format for success
+    exit_text = results[0].text.strip()
+    pattern = r"\*\*process .+ end with completed\(exit code: 0\)\*\*"
+    if not re.match(pattern, exit_text):
         return False
 
     # Check stdout format and content
@@ -282,6 +297,8 @@ class BaseCommandServerIntegrationTest(ABC):
 
     # 仍然需要声明属性，以便类型检查器知道它在这里被实现
     test_name: Optional[str] = None
+    web_port: Optional[int] = None
+    web_port_var: ContextVar[int] = ContextVar("web_port", default=0)
 
     @abstractmethod
     async def new_mcp_client_session(
@@ -669,7 +686,7 @@ class BaseCommandServerIntegrationTest(ABC):
                 "description": "Test timeout process retention",
                 "labels": ["timeout-test"],
                 "stdin": None,
-                "timeout": 2,  # 设置较短的超时时间，让进程超时
+                "timeout": 5,  # 设置较短的超时时间，让进程超时
                 "envs": None,
             },
         )
@@ -1115,19 +1132,19 @@ class BaseCommandServerIntegrationTest(ABC):
 
     @pytest.mark.anyio
     @pytest.mark.timeout(25)  # Give this test more time
-    async def test_command_bg_start_timeout_with_unresponsive_program(
+    async def test_command_execute_timeout_with_unresponsive_program(
         self, mcp_client_session_with_5_seconds_retention: ClientSession, tmp_path
     ):
         """Integration test: Verify timeout termination of unresponsive background process."""
-        print("Running test_command_bg_start_timeout_with_unresponsive_program...", file=sys.stderr)
+        print("Running test_command_execute_timeout_with_unresponsive_program...", file=sys.stderr)
 
         # Step 1: Start a background process with loop command that won't respond quickly
-        start_result = await self.call_tool(
+        execute_result = await self.call_tool(
             mcp_client_session_with_5_seconds_retention,
-            "command_bg_start",
+            "command_execute",
             {
                 "command": sys.executable,
-                "args": [str(CMD_SCRIPT_PATH), "loop", "10"],  # Loop for 10 seconds
+                "args": [str(CMD_SCRIPT_PATH), "loop", "15"],  # Loop for 10 seconds
                 "directory": str(tmp_path),
                 "description": "Test unresponsive timeout",
                 "labels": ["unresponsive-test"],
@@ -1137,20 +1154,16 @@ class BaseCommandServerIntegrationTest(ABC):
             },
         )
 
-        assert isinstance(start_result, (list, tuple))
-        assert len(start_result) == 1
-        assert isinstance(start_result[0], TextContent)
+        # step 1: Validate result
+        assert isinstance(execute_result, (list, tuple))
+        assert len(execute_result) == 4
+        assert isinstance(execute_result[0], TextContent)
+        assert validate_error_message_format(execute_result[0].text, "command_timeout")
+        # 从 timeout 的错误信息中提取 PID
+        pid = execute_result[0].text.split("PID: ")[1].split("**")[0]
+        print(f"PID: {pid}", file=sys.stderr)
 
-        # Validate and extract PID
-        pid = validate_process_started_format(start_result[0].text)
-        assert pid
-        print(f"Started unresponsive process with PID: {pid}", file=sys.stderr)
-
-        # Step 2: Wait for timeout (slightly longer than timeout)
-        await anyio.sleep(2)
-        print("Process should have timed out by now", file=sys.stderr)
-
-        # Step 3: Verify process status is TERMINATED
+        # step 2: Verify process status is TERMINATED
         detail_result = await self.call_tool(
             mcp_client_session_with_5_seconds_retention,
             "command_ps_detail",
@@ -1176,6 +1189,189 @@ class BaseCommandServerIntegrationTest(ABC):
         print("✓ Process cleaned up", file=sys.stderr)
 
         print("✅ Integration unresponsive timeout test passed", file=sys.stderr)
+
+    @pytest.mark.anyio
+    @pytest.mark.timeout(30)
+    async def test_command_execute_graceful_stop_via_http(
+        self, mcp_client_session: ClientSession, tmp_path
+    ):
+        """Integration test: Verify graceful termination via web manager HTTP interface of a command started by execute_command tool using another coroutine."""
+        print("Running test_command_execute_graceful_stop_via_http...", file=sys.stderr)
+
+        # Create memory stream for result
+        send, receive = create_memory_object_stream(1)
+
+        async def execute_task():
+            try:
+                result = await self.call_tool(
+                    mcp_client_session,
+                    "command_execute",
+                    {
+                        "command": sys.executable,
+                        "args": [str(CMD_SCRIPT_PATH), "sleep", "30"],
+                        "directory": str(tmp_path),
+                        "stdin": None,
+                        "timeout": 60,  # Long timeout
+                        "envs": None,
+                        "limit_lines": 500,
+                    },
+                )
+                await send.send(result)
+            except Exception as e:
+                await send.send(e)
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(execute_task)
+
+            # Wait a bit for process to start
+            await anyio.sleep(2)
+
+            # Use httpx to list processes and find our PID
+            web_port = self.web_port_var.get()
+            web_url = f"http://127.0.0.1:{web_port}"
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{web_url}/api/processes")
+                assert response.status_code == 200, f"Failed to list processes: {response.text}"
+                processes = response.json()["data"]
+                print(f"Found {len(processes)} processes", file=sys.stderr)
+
+                assert len(processes) == 1, "Expected exactly one process"
+                process = processes[0]
+                assert process["status"] == "running", f"Unexpected status: {process['status']}"
+                pid = process["pid"]
+                print(f"Found PID: {pid}", file=sys.stderr)
+
+                # Stop the process gracefully
+                response = await client.post(
+                    f"{web_url}/api/processes/{pid}/stop",
+                    json={"force": False}
+                )
+                assert response.status_code == 200, f"Failed to stop process: {response.text}"
+                print("Process stop requested", file=sys.stderr)
+
+            # Wait for execute_task to complete
+            with anyio.fail_after(10):
+                result = await receive.receive()
+
+            assert not isinstance(result, Exception), f"Execute task failed: {result}"
+
+            # Validate result indicates termination
+            assert len(result) == 3, f"Unexpected result length: {len(result)}"
+            assert "terminated" in result[0].text.lower(), f"Unexpected status: {result[0].text}"
+            print("Execute task completed with terminated status", file=sys.stderr)
+
+        # Verify final status via ps_detail
+        detail_result = await self.call_tool(
+            mcp_client_session,
+            "command_ps_detail",
+            {"pid": pid},
+        )
+        detail_text = detail_result[0].text
+        assert "TERMINATED" in detail_text.upper()
+        assert "stopped by user" in detail_text.lower()  # Assuming the reason
+        print("✓ Verified terminated status with correct reason", file=sys.stderr)
+
+        # Clean up
+        await self.call_tool(
+            mcp_client_session,
+            "command_ps_clean",
+            {"pids": [pid]},
+        )
+
+        print("✅ Integration graceful stop via HTTP test passed", file=sys.stderr)
+
+
+    @pytest.mark.anyio
+    @pytest.mark.timeout(30)
+    async def test_command_execute_unresponsive_process_and_graceful_stop_via_http(
+        self, mcp_client_session: ClientSession, tmp_path
+    ):
+        """Integration test: Verify graceful termination via web manager HTTP interface of a command started by execute_command tool using another coroutine."""
+        print("Running test_command_execute_unresponsive_process_and_graceful_stop_via_http...", file=sys.stderr)
+
+        # Create memory stream for result
+        send, receive = create_memory_object_stream(1)
+
+        async def execute_task():
+            try:
+                result = await self.call_tool(
+                    mcp_client_session,
+                    "command_execute",
+                    {
+                        "command": "uv",
+                        "args": [
+                            "run", "python", "build_executable.py", "-j", "16"
+                        ],
+                        "directory": str(PROJECT_ROOT),
+                        "stdin": None,
+                        "timeout": 60,  # Long timeout
+                        "envs": None,
+                        "limit_lines": 500,
+                    },
+                )
+                await send.send(result)
+            except Exception as e:
+                await send.send(e)
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(execute_task)
+
+            # Wait a bit for process to start
+            await anyio.sleep(2)
+
+            # Use httpx to list processes and find our PID
+            web_port = self.web_port_var.get()
+            web_url = f"http://127.0.0.1:{web_port}"
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(f"{web_url}/api/processes")
+                assert response.status_code == 200, f"Failed to list processes: {response.text}"
+                processes = response.json()["data"]
+                print(f"Found {len(processes)} processes", file=sys.stderr)
+
+                assert len(processes) == 1, "Expected exactly one process"
+                process = processes[0]
+                assert process["status"] == "running", f"Unexpected status: {process['status']}"
+                pid = process["pid"]
+                print(f"Found PID: {pid}", file=sys.stderr)
+
+                # Stop the process gracefully
+                response = await client.post(
+                    f"{web_url}/api/processes/{pid}/stop",
+                    json={"force": False}
+                )
+                assert response.status_code == 200, f"Failed to stop process: {response.text}"
+                print("Process stop requested", file=sys.stderr)
+
+            # Wait for execute_task to complete
+            with anyio.fail_after(10):
+                result = await receive.receive()
+
+            assert not isinstance(result, Exception), f"Execute task failed: {result}"
+
+            # Validate result indicates termination
+            assert len(result) == 3, f"Unexpected result length: {len(result)}"
+            assert "terminated" in result[0].text.lower(), f"Unexpected status: {result[0].text}"
+            print("Execute task completed with terminated status", file=sys.stderr)
+
+        # Verify final status via ps_detail
+        detail_result = await self.call_tool(
+            mcp_client_session,
+            "command_ps_detail",
+            {"pid": pid},
+        )
+        detail_text = detail_result[0].text
+        assert "TERMINATED" in detail_text.upper()
+        assert "stopped by user" in detail_text.lower()  # Assuming the reason
+        print("✓ Verified terminated status with correct reason", file=sys.stderr)
+
+        # Clean up
+        await self.call_tool(
+            mcp_client_session,
+            "command_ps_clean",
+            {"pids": [pid]},
+        )
+
+        print("✅ Integration graceful stop via HTTP test passed", file=sys.stderr)
 
 
 class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
@@ -1209,9 +1405,13 @@ class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
             server_type="command", mode="stdio", project_root=PROJECT_ROOT, env=env
         )
 
+        web_port = get_random_available_port()
+        args += ["--debug", "--enable-web-manager", "--web-host", "127.0.0.1", "--web-port", str(web_port)]
+        token = self.web_port_var.set(web_port)
+
         server_params = StdioServerParameters(
             command=cmd,
-            args=args+["--debug"],
+            args=args,
             env=env,
         )
         print(
@@ -1271,7 +1471,7 @@ class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
             yield session  # Provide the session to the tests
 
         except Exception as e:
-            print(f"Error in MCP client session setup: {e}", file=sys.stderr)
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Error in MCP client session setup: {e}", file=sys.stderr)
             import traceback
 
             print(f"Full traceback: {traceback.format_exc()}", file=sys.stderr)
@@ -1283,6 +1483,7 @@ class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
             # Step 1: Close the session first
             if session is not None:
                 try:
+                    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Closing session...", file=sys.stderr)
                     # Give any ongoing operations time to complete
                     await anyio.sleep(0.1)  # Replace asyncio.sleep with anyio.sleep
                     await session.__aexit__(None, None, None)
@@ -1299,6 +1500,9 @@ class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
                     print("Stdio context cleaned up successfully", file=sys.stderr)
                 except Exception as e:
                     cleanup_errors.append(f"Stdio cleanup error: {e}")
+
+            # Reset ContextVar
+            self.web_port_var.reset(token)
 
             # Report any cleanup errors but don't raise them
             if cleanup_errors:

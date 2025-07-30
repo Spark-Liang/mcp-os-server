@@ -817,6 +817,58 @@ class ProcessManagerTestBase(ABC):
         finally:
             await self.cleanup_process_manager(process_manager)
 
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="NPM testing is specific to Windows.")
+    @pytest.mark.skipif(os.environ.get("TEST_NPM_ENABLED", "") != "true", reason="NPM tests disabled.")
+    async def test_start_process_with_npm_print_chinese(self, mock_output_manager: IOutputManager):
+        process_manager = await self.create_process_manager(mock_output_manager)
+        try:
+            msg = "中文测试"
+            command = ["npm", "exec", "node", "--", "-e", f"console.log('{msg}')"]
+            process = await process_manager.start_process(
+                command=command,
+                directory=".",
+                description="Test NPM print Chinese",
+                encoding="utf-8",
+                timeout=10,
+            )
+            completed_info = await process.wait_for_completion()
+            assert completed_info.status == ProcessStatus.COMPLETED
+            assert completed_info.exit_code == 0
+
+            output_gen = process.get_output("stdout")
+            output_lines = [entry.text async for entry in output_gen]
+            assert msg in ''.join(output_lines)
+        finally:
+            await self.cleanup_process_manager(process_manager)
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="NPM testing is specific to Windows.")
+    @pytest.mark.skipif(os.environ.get("TEST_NPM_ENABLED", "") != "true", reason="NPM tests disabled.")
+    async def test_start_process_with_npm_infinite_loop_and_stop(self, mock_output_manager: IOutputManager):
+        process_manager = await self.create_process_manager(mock_output_manager)
+        try:
+            command = ["npm", "exec", "node", "--", "-e", "while(true){}"]
+            process = await process_manager.start_process(
+                command=command,
+                directory=".",
+                description="Test NPM infinite loop",
+                encoding="utf-8",
+                timeout=5,
+            )
+
+            # Wait a bit to ensure it's running
+            await anyio.sleep(1)
+
+            # Stop the process
+            await process.stop()
+
+            stopped_info = await process.wait_for_completion()
+            assert stopped_info.status == ProcessStatus.TERMINATED
+            assert stopped_info.exit_code is not None and stopped_info.exit_code != 0
+        finally:
+            await self.cleanup_process_manager(process_manager)
+
+
 class TestAnyioProcessManager(ProcessManagerTestBase):
     async def create_process_manager(
         self, mock_output_manager: IOutputManager

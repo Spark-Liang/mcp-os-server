@@ -116,6 +116,7 @@ class TestWebManagerHTTPAPI:
             directory=tmp_path.as_posix(),
             description="Test echo process",
             labels=["test", "echo"],
+            timeout=10,
         )
 
         # Wait a moment for process to be recorded
@@ -154,6 +155,7 @@ class TestWebManagerHTTPAPI:
             command=["python", str(CMD_SCRIPT_PATH), "echo", "test"],
             directory=tmp_path.as_posix(),
             description="Test completed process",
+            timeout=10,
         )
         await process.wait_for_completion(timeout=10)
 
@@ -176,6 +178,7 @@ class TestWebManagerHTTPAPI:
             directory=tmp_path.as_posix(),
             description="Test labeled process",
             labels=["test", "specific"],
+            timeout=10,
         )
         await process.wait_for_completion(timeout=10)
 
@@ -201,6 +204,7 @@ class TestWebManagerHTTPAPI:
             command=["python", str(CMD_SCRIPT_PATH), "echo", "detail test"],
             directory=tmp_path.as_posix(),
             description="Test process detail",
+            timeout=10,
         )
         await process.wait_for_completion(timeout=10)
 
@@ -232,6 +236,7 @@ class TestWebManagerHTTPAPI:
             command=["python", str(CMD_SCRIPT_PATH), "echo", "output test"],
             directory=tmp_path.as_posix(),
             description="Test process output",
+            timeout=10,
         )
         await process.wait_for_completion(timeout=10)
 
@@ -260,6 +265,7 @@ class TestWebManagerHTTPAPI:
             command=["python", str(CMD_SCRIPT_PATH), "multiline"],
             directory=tmp_path.as_posix(),
             description="Test multiline output",
+            timeout=10,
         )
         await process.wait_for_completion(timeout=10)
 
@@ -291,6 +297,7 @@ class TestWebManagerHTTPAPI:
             command=["python", str(CMD_SCRIPT_PATH), "sleep", "10"],
             directory=tmp_path.as_posix(),
             description="Test stop process",
+            timeout=10,
         )
 
         # Give it time to start
@@ -317,6 +324,7 @@ class TestWebManagerHTTPAPI:
             command=["python", str(CMD_SCRIPT_PATH), "sleep", "10"],
             directory=tmp_path.as_posix(),
             description="Test force stop process",
+            timeout=10,
         )
 
         # Give it time to start
@@ -351,6 +359,7 @@ class TestWebManagerHTTPAPI:
             command=["python", str(CMD_SCRIPT_PATH), "echo", "clean test"],
             directory=tmp_path.as_posix(),
             description="Test clean process",
+            timeout=10,
         )
         await process.wait_for_completion(timeout=10)
 

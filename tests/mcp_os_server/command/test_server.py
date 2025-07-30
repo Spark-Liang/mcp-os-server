@@ -9,7 +9,7 @@ import pytest_asyncio
 from mcp.server.fastmcp import FastMCP
 from mcp.types import TextContent
 
-from mcp_os_server.command.interfaces import IProcessManager
+from mcp_os_server.command.interfaces import IProcessManager, ProcessStatus
 from mcp_os_server.command.output_manager import OutputManager
 from mcp_os_server.command.process_manager_anyio import AnyioProcessManager
 from mcp_os_server.command.server import define_mcp_server
@@ -86,7 +86,7 @@ def validate_command_success_format(
         return False
 
     # Check exit code (should be 0 for success)
-    if not results[0].text.strip() == "**exit with 0**":
+    if not (f"end with {ProcessStatus.COMPLETED.value} (exit code: 0)" in results[0].text):
         return False
 
     # Check stdout format and content
@@ -118,7 +118,7 @@ def validate_command_failure_format(results: List[TextContent], exit_code: int) 
         return False
 
     # Check exit code
-    if not results[0].text.strip() == f"**exit with {exit_code}**":
+    if not (f"end with {ProcessStatus.FAILED.value} (exit code: {exit_code})" in results[0].text):
         return False
 
     # Check stdout format
@@ -319,6 +319,7 @@ class TestMCPServerBasicFunctionality:
             command=[sys.executable, str(CMD_SCRIPT_PATH), "sleep", "10"],
             directory=str(tmp_path),
             description="listing test",
+            timeout=10,
         )
 
         try:
@@ -349,6 +350,7 @@ class TestMCPServerBasicFunctionality:
             command=[sys.executable, str(CMD_SCRIPT_PATH), "sleep", "10"],
             directory=str(tmp_path),
             description="test stop",
+            timeout=10,
         )
 
         # Stop the process
@@ -371,6 +373,7 @@ class TestMCPServerBasicFunctionality:
             directory=str(tmp_path),
             description="detail test",
             labels=["test", "detail"],
+            timeout=10,
         )
 
         try:
@@ -401,6 +404,7 @@ class TestMCPServerBasicFunctionality:
             command=[sys.executable, str(CMD_SCRIPT_PATH), "echo", command_text],
             directory=str(tmp_path),
             description="logging test",
+            timeout=10,
         )
         await process.wait_for_completion()
 
@@ -453,6 +457,7 @@ class TestMCPServerBasicFunctionality:
             command=[sys.executable, str(CMD_SCRIPT_PATH), "echo", "done"],
             directory=str(tmp_path),
             description="to be cleaned",
+            timeout=10,
         )
         await process.wait_for_completion()
 
@@ -605,6 +610,7 @@ class TestMCPServerDefensiveProgramming:
             command=[sys.executable, str(CMD_SCRIPT_PATH), "echo", "test"],
             directory=str(tmp_path),
             description="no logs test",
+            timeout=10,
         )
         await process.wait_for_completion()
 
@@ -701,6 +707,7 @@ class TestMCPServerDefensiveProgramming:
             command=[sys.executable, str(CMD_SCRIPT_PATH), "sleep", "5"],
             directory=str(tmp_path),
             description="filter test",
+            timeout=10,
         )
 
         try:
@@ -750,8 +757,8 @@ class TestMCPServerDefensiveProgramming:
         assert isinstance(result[1], TextContent)
         assert isinstance(result[2], TextContent)
         # Should handle encoding properly without errors
-        # Check that we have proper exit code format
-        assert result[0].text.strip() == "**exit with 0**"
+        # Check that we have proper exit code format, contains PID and status
+        assert f"end with {ProcessStatus.COMPLETED.value} (exit code: 0)" in result[0].text
         # Check that stdout format is correct and has some output
         assert result[1].text.startswith("---\nstdout:\n---\n")
         assert result[1].text.strip()  # Should have some output
@@ -791,6 +798,7 @@ class TestMCPServerDefensiveProgramming:
             command=[sys.executable, str(CMD_SCRIPT_PATH), "echo", "stdout_message"],
             directory=str(tmp_path),
             description="stderr test",
+            timeout=10,
         )
         await process.wait_for_completion()
 
@@ -833,6 +841,7 @@ class TestMCPServerDefensiveProgramming:
             command=[sys.executable, str(CMD_SCRIPT_PATH), "echo", command_text],
             directory=str(tmp_path),
             description="time format test",
+            timeout=10,
         )
         await process.wait_for_completion()
 
@@ -871,6 +880,7 @@ class TestMCPServerDefensiveProgramming:
             command=[sys.executable, str(CMD_SCRIPT_PATH), "echo", command_text],
             directory=str(tmp_path),
             description="no time prefix test",
+            timeout=10,
         )
         await process.wait_for_completion()
 
@@ -919,6 +929,7 @@ class TestMCPServerDefensiveProgramming:
             ],
             directory=str(tmp_path),
             description="grep test",
+            timeout=10,
         )
         await process.wait_for_completion()
 
@@ -957,6 +968,7 @@ class TestMCPServerDefensiveProgramming:
             command=[sys.executable, str(CMD_SCRIPT_PATH), "echo", long_output],
             directory=str(tmp_path),
             description="limit lines test",
+            timeout=10,
         )
         await process.wait_for_completion()
 
@@ -992,6 +1004,7 @@ class TestMCPServerDefensiveProgramming:
             command=[sys.executable, str(CMD_SCRIPT_PATH), "echo", "tail test"],
             directory=str(tmp_path),
             description="tail test",
+            timeout=10,
         )
         await process.wait_for_completion()
 
@@ -1169,6 +1182,7 @@ class TestMCPServerConfigurationParameters:
             command=[sys.executable, str(CMD_SCRIPT_PATH), "echo", "retention test"],
             directory=str(tmp_path),
             description="retention test",
+            timeout=10,
         )
         await process.wait_for_completion()
 

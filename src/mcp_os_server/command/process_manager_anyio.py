@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import AsyncGenerator, Dict, List, Optional
 import psutil
 import traceback
+import shutil
 
 import anyio
 from anyio import (
@@ -123,6 +124,55 @@ async def kill_process(process: Process):
         await kill_windows_process(process)
     else:
         process.kill()
+
+
+def get_windows_executable_command(command: str) -> str:
+    """
+    Get the correct executable command normalized for Windows.
+
+    On Windows, commands might exist with specific extensions (.exe, .cmd, etc.)
+    that need to be located for proper execution.
+
+    Args:
+        command: Base command (e.g., 'uvx', 'npx')
+
+    Returns:
+        str: Windows-appropriate command path
+    """
+    try:
+        # First check if command exists in PATH as-is
+        if command_path := shutil.which(command):
+            return command_path
+
+        # Check for Windows-specific extensions
+        for ext in [".cmd", ".bat", ".exe", ".ps1"]:
+            ext_version = f"{command}{ext}"
+            if ext_path := shutil.which(ext_version):
+                return ext_path
+
+        # For regular commands or if we couldn't find special versions
+        return command
+    except OSError:
+        # Handle file system errors during path resolution
+        # (permissions, broken symlinks, etc.)
+        return command
+
+
+def _get_executable_command(command: str) -> str:
+    """
+    Get the correct executable command normalized for the current platform.
+
+    Args:
+        command: Base command (e.g., 'uvx', 'npx')
+
+    Returns:
+        str: Platform-appropriate command
+    """
+    if sys.platform == "win32":
+        return get_windows_executable_command(command)
+    else:
+        return command
+
 
 class AnyioProcess(IProcess):
     def __init__(
@@ -478,8 +528,16 @@ class AnyioProcessManager(IProcessManager):
         encoding: str = sys.getdefaultencoding(),
         labels: Optional[List[str]] = None,
     ) -> IProcess:
+        if not command:
+            raise CommandExecutionError("Command is empty")
+
         env = {**os.environ, **(envs or {})}
         try:
+            logger.debug("original command: %s", command)
+            executable_command = _get_executable_command(command[0])
+            command = [executable_command] + command[1:]
+            logger.debug("normalized command: %s", command)
+
             logger.debug(f"Starting process:\ncommand: {command}\ndirectory: {directory}\nenv: {env}")
             if sys.platform == "win32":
                 creation_flags = subprocess.CREATE_NO_WINDOW

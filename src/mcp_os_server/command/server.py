@@ -171,7 +171,7 @@ def define_mcp_server(
 
             # Always return 3 TextContent items as per FDS specification
             return [
-                TextContent(type="text", text=f"**exit with {info.exit_code}**"),
+                TextContent(type="text", text=f"**process {process.pid} end with {info.status.value}(exit code: {info.exit_code})**"),
                 TextContent(type="text", text=f"---\nstdout:\n---\n{stdout}\n"),
                 TextContent(type="text", text=f"---\nstderr:\n---\n{stderr}\n"),
             ]

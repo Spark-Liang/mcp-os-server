@@ -317,7 +317,7 @@ MCP OS Server 暴露了以下 MCP 工具，客户端可以通过它们与服务�
 ```json
 {
     "type": "text",
-    "text": "**exit with 0**"
+    "text": "**process 123 end with completed (exit code: 0)**"
 },
 {
     "type": "text",

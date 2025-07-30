@@ -36,6 +36,12 @@ class EntrypointSetupHandler(Handler):
             "--include-package=loguru",
             "--include-package=pydantic",
         ])
+        ctx.args.extend([
+            '--lto=yes',
+            '--enable-plugin=upx',
+            '--low-memory',
+            '--remove-output',
+        ])
 
 
 if __name__ == "__main__":
