@@ -140,7 +140,11 @@ def get_windows_executable_command(command: str) -> str:
         str: Windows-appropriate command path
     """
     try:
-        # First check if command exists in PATH as-is
+        # First check if built-in command for cmd.exe, such as `echo`
+        if command.lower() in ["echo", "dir", "type", "cls", "pause", "exit"]:
+            return command
+
+        # Then check if command exists in PATH as-is
         if command_path := shutil.which(command):
             return command_path
 
@@ -525,14 +529,14 @@ class AnyioProcessManager(IProcessManager):
         description: str,
         timeout: int,
         stdin_data: Optional[bytes | str] = None,
-        envs: Optional[Dict[str, str]] = None,
+        envs: Optional[Dict[str, str | None]] = None,
         encoding: str = sys.getdefaultencoding(),
         labels: Optional[List[str]] = None,
     ) -> IProcess:
         if not command:
             raise CommandExecutionError("Command is empty")
 
-        env = {**os.environ, **(envs or {})}
+        env = {k:v for k,v in {**(envs or {})}.items() if v is not None}
         try:
             logger.debug("original command: %s", command)
             executable_command = _get_executable_command(command[0])

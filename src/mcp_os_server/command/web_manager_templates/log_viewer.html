@@ -1,0 +1,28 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Command Server - 运行日志</title>
+    <style>
+        body { font-family: monospace; margin: 20px; }
+        pre { background: #f4f4f4; padding: 20px; white-space: pre-wrap; word-wrap: break-word; }
+    </style>
+</head>
+<body>
+    <h1>运行日志</h1>
+    <a href="/">返回</a>
+    <button onclick="refreshLogs()">刷新</button>
+    <pre id="logContent">{{ log_content }}</pre>
+</body>
+<script>
+function refreshLogs() {
+    fetch('/api/debug/logs')
+        .then(response => response.text())
+        .then(text => {
+            document.getElementById('logContent').textContent = text;
+        });
+}
+</script>
+</html> 

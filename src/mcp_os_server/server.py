@@ -16,9 +16,12 @@ import tempfile
 import webbrowser
 from pathlib import Path
 from typing import Dict, List, Optional
+import tempfile
+import atexit
 
 import click
 from mcp.types import TextContent
+from pydantic import BaseModel, Field
 
 from .command.interfaces import IProcessManager
 from .command.output_manager import OutputManager
@@ -26,6 +29,8 @@ from .command.process_manager_anyio import AnyioProcessManager
 from .command.web_manager import WebManager
 from .filesystem.server import create_server as create_filesystem_server
 from .filtered_fast_mcp import FilteredFastMCP
+import re
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +63,16 @@ def setup_logger(mode: str, debug: bool = False) -> logging.Logger:
 
     # 通过 LOG_FILE_PATH 配置文件路径
     log_file_path = os.getenv("LOG_FILE_PATH")
-    if log_file_path:
-        file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
+    if not log_file_path:
+        log_file_path = tempfile.mktemp(prefix="mcp_os_server_", suffix=".log")
+    os.environ['MCP_LOG_FILE'] = log_file_path
+    file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
 
     logger.setLevel(level)
     logger.debug(f"debug: {debug}")
+    logger.info(f"log_file_path: {log_file_path}")
     logger.info(f"sys.getdefaultencoding(): {sys.getdefaultencoding()}")
     logger.info(f"sys.getfilesystemencoding(): {sys.getfilesystemencoding()}")
 
@@ -93,20 +101,50 @@ def parse_allowed_directories(allowed_dirs_str: str) -> List[str]:
     return [dir_path for dir_path in dirs if dir_path]
 
 
-def parse_command_default_encoding_map() -> Dict[str, str]:
-    """Parse command-specific encoding from DEFAULT_ENCODING_<command> environment variables."""
+class EnvVarsParseResult(BaseModel):
+    """
+    环境变量解析结果
+    """
+    command_default_encoding_map: Dict[str, str] = Field(description="命令默认编码映射")
+    command_env_map: Dict[str, Dict[str, str]] = Field(description="命令环境变量映射")
+    project_env_folder: Optional[str] = Field(description="项目环境变量文件夹路径")
+    clean_envs: Dict[str, str] = Field(description="清理后的环境变量")
+
+def parse_env_vars() -> EnvVarsParseResult:
+    """
+    解析环境变量
+    """
     command_encoding_map = {}
-    prefix = "DEFAULT_ENCODING_"
+    command_env_map = defaultdict(dict)
+    clean_envs = {}
+    command_encoding_prefix = "DEFAULT_ENCODING_"
+    command_env_pattern = re.compile(r'^(.+?)_COMMAND_ENV_(.+?)$')
 
     for env_key, env_value in os.environ.items():
-        if env_key.startswith(prefix):
-            
-            command_name = env_key[len(prefix) :]
+        if env_key.startswith(command_encoding_prefix):
+            command_name = env_key[len(command_encoding_prefix) :]
             if command_name and env_value.strip():
                 command_encoding_map[command_name] = env_value.strip()
-    
+        elif command_env_pattern.match(env_key):
+            match = command_env_pattern.match(env_key)
+            if match:
+                command_name = match.group(1).lower()
+                var_name = match.group(2)
+                command_env_map[command_name][var_name] = env_value
+        elif env_key == "PROJECT_ENV_FOLDER":
+            project_env_folder = env_value
+        else:
+            clean_envs[env_key] = env_value
+
     logger.info(f"command_encoding_map: {command_encoding_map}")
-    return command_encoding_map
+    logger.info(f"command_env_map: {dict(command_env_map)}")
+    logger.info(f"clean_envs: {clean_envs}")
+    return EnvVarsParseResult(
+        command_default_encoding_map=command_encoding_map, 
+        command_env_map=command_env_map, 
+        project_env_folder=project_env_folder,
+        clean_envs=clean_envs
+    )
 
 
 def parse_filesystem_service_features():
@@ -294,7 +332,7 @@ async def _run_unified_server(
 
     process_retention_seconds = int(os.getenv("PROCESS_RETENTION_SECONDS", "300"))
     default_encoding = os.getenv("DEFAULT_ENCODING", get_default_encoding())
-    command_default_encoding_map = parse_command_default_encoding_map()
+    env_vars_parse_result = parse_env_vars()
 
     # OUTPUT_STORAGE_PATH logic: Use temp dir if not explicitly set
     output_storage_path = os.getenv("OUTPUT_STORAGE_PATH")
@@ -311,8 +349,8 @@ async def _run_unified_server(
         logger.info("Allowed commands: %s", ", ".join(allowed_commands))
         logger.info("Process retention: %s seconds", process_retention_seconds)
         logger.info("Default encoding: %s", default_encoding)
-        if command_default_encoding_map:
-            logger.info("Command-specific encodings: %s", command_default_encoding_map)
+        if env_vars_parse_result.command_default_encoding_map:
+            logger.info("Command-specific encodings: %s", env_vars_parse_result.command_default_encoding_map)
     if allowed_dirs:
         logger.info("Allowed directories: %s", ", ".join(allowed_dirs))
     if filesystem_service_features:
@@ -365,8 +403,11 @@ async def _run_unified_server(
             process_manager=process_manager,
             allowed_commands=allowed_commands,
             default_encoding=default_encoding,
-            command_default_encoding_map=command_default_encoding_map,
+            command_default_encoding_map=env_vars_parse_result.command_default_encoding_map,
             default_timeout=default_timeout,
+            command_env_map=env_vars_parse_result.command_env_map,
+            default_envs=env_vars_parse_result.clean_envs,
+            project_env_folder=env_vars_parse_result.project_env_folder,
         )
 
     # Define filesystem server tools if allowed
@@ -374,10 +415,8 @@ async def _run_unified_server(
         from .filesystem.filesystem_service import FilesystemService
         from .filesystem.server import define_mcp_server as define_filesystem_server
 
-        filesystem_service = FilesystemService(
-            allowed_dirs, features=filesystem_service_features
-        )
-        define_filesystem_server(mcp, filesystem_service)
+        filesystem_service = FilesystemService(features=filesystem_service_features)
+        define_filesystem_server(mcp, filesystem_service, allowed_dirs)
 
     # Add command_open_web_manager tool if web manager is enabled
     if enable_web_manager:
@@ -588,7 +627,7 @@ async def _run_command_server(
 
     process_retention_seconds = int(os.getenv("PROCESS_RETENTION_SECONDS", "300"))
     default_encoding = os.getenv("DEFAULT_ENCODING", get_default_encoding())
-    command_default_encoding_map = parse_command_default_encoding_map()
+    env_vars_parse_result = parse_env_vars()
 
     # OUTPUT_STORAGE_PATH logic: Use temp dir if not explicitly set
     output_storage_path = os.getenv("OUTPUT_STORAGE_PATH")
@@ -604,8 +643,8 @@ async def _run_command_server(
     logger.info("Allowed commands: %s", ", ".join(allowed_commands))
     logger.info("Process retention: %s seconds", process_retention_seconds)
     logger.info("Default encoding: %s", default_encoding)
-    if command_default_encoding_map:
-        logger.info("Command-specific encodings: %s", command_default_encoding_map)
+    if env_vars_parse_result.command_default_encoding_map:
+        logger.info("Command-specific encodings: %s", env_vars_parse_result.command_default_encoding_map)
 
     # Create CommandExecutor
     try:
@@ -648,8 +687,11 @@ async def _run_command_server(
         process_manager=process_manager,
         allowed_commands=allowed_commands,
         default_encoding=default_encoding,
-        command_default_encoding_map=command_default_encoding_map,
         default_timeout=default_timeout,
+        command_default_encoding_map=env_vars_parse_result.command_default_encoding_map,
+        command_env_map=env_vars_parse_result.command_env_map,
+        default_envs=env_vars_parse_result.clean_envs,
+        project_env_folder=env_vars_parse_result.project_env_folder,
     )
 
     # Add command_open_web_manager tool if web manager is enabled

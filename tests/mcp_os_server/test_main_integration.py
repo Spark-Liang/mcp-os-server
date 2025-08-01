@@ -5,14 +5,16 @@ import tempfile
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import AsyncGenerator, List, Optional, Sequence
+from typing import AsyncGenerator, List, Optional, Sequence, Any
 from datetime import datetime
 
 import anyio
 import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.types import TextContent
+from mcp.types import TextContent, ListRootsResult, Root
+from mcp.shared.context import RequestContext
+from pydantic import FileUrl
 
 import httpx
 from anyio import create_memory_object_stream
@@ -100,6 +102,12 @@ def _get_server_start_params(
 
     return cmd, args
 
+async def list_roots_callback(context: RequestContext["ClientSession", Any]) -> ListRootsResult:
+    return ListRootsResult(
+        roots=[
+            Root(uri=FileUrl(f"file://{PROJECT_ROOT.absolute()}"))
+        ],
+    )
 
 # Helper functions for validating output formats according to FDS specifications
 def validate_process_list_table(text: str) -> bool:
@@ -171,7 +179,7 @@ def validate_command_success_format(
 
     # Check exit code format for success
     exit_text = results[0].text.strip()
-    pattern = r"\*\*process .+ end with completed\(exit code: 0\)\*\*"
+    pattern = r"\*\*process .+ end with completed \(exit code: 0\)\*\*"
     if not re.match(pattern, exit_text):
         return False
 
@@ -1373,6 +1381,171 @@ class BaseCommandServerIntegrationTest(ABC):
 
         print("✅ Integration graceful stop via HTTP test passed", file=sys.stderr)
 
+    
+    @pytest.mark.anyio
+    async def test_command_env_vars_comprehensive(
+        self, mcp_client_session: ClientSession, tmp_path
+    ):
+        """Test comprehensive <COMMAND>_ENV_<VAR> environment variable functionality."""
+        print('Running test_command_env_vars_comprehensive...', file=sys.stderr)
+        
+        # Test 1: Basic command-specific environment variable
+        result = await self.call_tool(
+            mcp_client_session,
+            'command_execute',
+            {
+                'command': 'uv',
+                'args': ['run', 'python', '-c', 'import os; print(f"UV_TEST_VAR={os.getenv(\"UV_TEST_VAR\", \"NOT_SET\")}")'],
+                'directory': str(PROJECT_ROOT),
+            }
+        )
+        # Should use environment variable from server startup (UV_ENV_UV_TEST_VAR if set)
+        assert len(result) >= 2
+        
+        # Test 2: User environment variables override command-specific ones
+        user_env = {'UV_TEST_VAR': 'user_override_value'}
+        result_override = await self.call_tool(
+            mcp_client_session,
+            'command_execute',
+            {
+                'command': 'uv',
+                'args': ['run', 'python', '-c', 'import os; print(f"UV_TEST_VAR={os.getenv(\"UV_TEST_VAR\", \"NOT_SET\")}")'],
+                'directory': str(PROJECT_ROOT),
+                'envs': user_env,
+            }
+        )
+        # Should use user-provided value
+        assert validate_command_success_format(list(result_override), 'UV_TEST_VAR=user_override_value')
+        
+        # Test 3: Environment variable deletion (setting to empty)
+        user_env_delete = {'UV_TEST_VAR': None}
+        result_delete = await self.call_tool(
+            mcp_client_session,
+            'command_execute',
+            {
+                'command': 'uv',
+                'args': ['run', 'python', '-c', 'import os; print(f"UV_TEST_VAR={os.getenv(\"UV_TEST_VAR\", \"NOT_SET\")}")'],
+                'directory': str(PROJECT_ROOT),
+                'envs': user_env_delete,
+            }
+        )
+        # Should show NOT_SET when variable is deleted
+        assert validate_command_success_format(list(result_delete), 'UV_TEST_VAR=NOT_SET')
+
+    @pytest.mark.anyio 
+    async def test_project_env_folder_comprehensive(
+        self, mcp_client_session: ClientSession, tmp_path
+    ):
+        """Test comprehensive PROJECT_ENV_FOLDER functionality with MCP Roots protocol."""
+        print('Running test_project_env_folder_comprehensive...', file=sys.stderr)
+        
+        # Test 1: Basic project environment loading from predefined uv.env
+        result = await self.call_tool(
+            mcp_client_session,
+            'command_execute',
+            {
+                'command': 'uv',
+                'args': ['run', 'python', '-c', 'import os; print(f"UV_PROJECT_TEST={os.getenv(\"UV_PROJECT_TEST\", \"NOT_SET\")}")'],
+                'directory': str(PROJECT_ROOT),
+            }
+        )
+        assert validate_command_success_format(list(result), 'UV_PROJECT_TEST=from_project_env')
+        
+        # Test 2: Project env has higher priority than command-specific env
+        result_priority = await self.call_tool(
+            mcp_client_session,
+            'command_execute',
+            {
+                'command': 'uv',
+                'args': ['run', 'python', '-c', 'import os; print(f"UV_PRIORITY_TEST={os.getenv(\"UV_PRIORITY_TEST\", \"NOT_SET\")}")'],
+                'directory': str(PROJECT_ROOT),
+            }
+        )
+        assert validate_command_success_format(list(result_priority), 'UV_PRIORITY_TEST=project_env_priority')
+        
+        # Test 3: User envs still have highest priority
+        user_env = {'UV_PROJECT_TEST': 'user_highest_priority'}
+        result_user_priority = await self.call_tool(
+            mcp_client_session,
+            'command_execute',
+            {
+                'command': 'uv',
+                'args': ['run', 'python', '-c', 'import os; print(f"UV_PROJECT_TEST={os.getenv(\"UV_PROJECT_TEST\", \"NOT_SET\")}")'],
+                'directory': str(PROJECT_ROOT),
+                'envs': user_env,
+            }
+        )
+        assert validate_command_success_format(list(result_user_priority), 'UV_PROJECT_TEST=user_highest_priority')
+        
+        # Test 4: Variable deletion through empty value in project env
+        result_delete = await self.call_tool(
+            mcp_client_session,
+            'command_execute',
+            {
+                'command': 'uv',
+                'args': ['run', 'python', '-c', 'import os; print(f"UV_DELETE_VAR={os.getenv(\"UV_DELETE_VAR\", \"NOT_SET\")}")'],
+                'directory': str(PROJECT_ROOT),
+            }
+        )
+        assert validate_command_success_format(list(result_delete), 'UV_DELETE_VAR=NOT_SET')
+
+    @pytest.mark.anyio
+    async def test_env_vars_case_insensitive_command_matching(
+        self, mcp_client_session: ClientSession, tmp_path
+    ):
+        """Test that command env file matching is case-insensitive."""
+        print('Running test_env_vars_case_insensitive_command_matching...', file=sys.stderr)
+        
+        # Test using lowercase 'uv' command should find 'uv.env' file (case-insensitive)
+        result = await self.call_tool(
+            mcp_client_session,
+            'command_execute',
+            {
+                'command': 'uv',
+                'args': ['run', 'python', '-c', 'import os; print(f"UV_CASE_TEST={os.getenv(\"UV_CASE_TEST\", \"NOT_SET\")}")'],
+                'directory': str(PROJECT_ROOT),
+            }
+        )
+        assert validate_command_success_format(list(result), 'UV_CASE_TEST=case_insensitive_works')
+
+    @pytest.mark.anyio
+    async def test_env_vars_multiple_commands_verification(
+        self, mcp_client_session: ClientSession, tmp_path
+    ):
+        """Test environment variables work correctly for multiple different commands."""
+        print('Running test_env_vars_multiple_commands_verification...', file=sys.stderr)
+        
+        # Test uv command with environment variables
+        result_uv = await self.call_tool(
+            mcp_client_session,
+            'command_execute', 
+            {
+                'command': 'uv',
+                'args': ['run', 'python', '-c', 
+                        'import os; '
+                        'vars_to_check = ["UV_TEST_VAR", "UV_PRIORITY_TEST", "UV_SPECIAL_CHARS"]; '
+                        'for var in vars_to_check: print(f"{var}={os.getenv(var, \"NOT_SET\")}")'],
+                'directory': str(PROJECT_ROOT),
+            }
+        )
+        
+        # Verify multiple environment variables are loaded correctly
+        stdout_content = result_uv[1].text if len(result_uv) > 1 else ""
+        assert "UV_TEST_VAR=" in stdout_content
+        assert "UV_PRIORITY_TEST=" in stdout_content  
+        assert "UV_SPECIAL_CHARS=" in stdout_content
+        
+        # Test echo command (should have different env vars if ECHO_ENV_* are set)
+        result_echo = await self.call_tool(
+            mcp_client_session,
+            'command_execute',
+            {
+                'command': 'echo',
+                'args': ['$PATH'],  # Simple test to verify echo works
+                'directory': str(tmp_path),
+            }
+        )
+        assert len(result_echo) >= 2  # Should have process status and stdout
 
 class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
     """Integration tests for the MCP Command Server via STDIO protocol."""
@@ -1396,6 +1569,13 @@ class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
         if process_retention_seconds is not None:
             env["PROCESS_RETENTION_SECONDS"] = str(process_retention_seconds)
         env["PYTHONIOENCODING"] = "utf-8"
+        env["PROJECT_ENV_FOLDER"] = "tests/resources/env_folder"
+        
+        # Add command-specific environment variables for testing
+        env["UV_COMMAND_ENV_UV_TEST_VAR"] = "from_command_env"
+        env["UV_COMMAND_ENV_UV_PRIORITY_TEST"] = "command_env_value"
+        env["ECHO_COMMAND_ENV_TEST_VAR"] = "echo_command_env"
+        
         # 固定在 .tmp 目录下生成日志文件，因为 gitignore 会忽略 .tmp 目录
         cleaned_test_name = re.sub(r'[^\w\d_.-]', '_', self.test_name) if self.test_name else "unknown_test"
         log_file_path = PROJECT_ROOT / ".tmp" / f"mcp_os_server_{cleaned_test_name}.log"
@@ -1435,7 +1615,10 @@ class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
             print("Stdio streams established", file=sys.stderr)
 
             # Create session
-            session = ClientSession(read, write)
+            session = ClientSession(
+                read, write,
+                list_roots_callback=list_roots_callback,
+            )
             await session.__aenter__()
             print("Client session created", file=sys.stderr)
 
@@ -1510,6 +1693,7 @@ class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
                     print(f"Warning: {error}", file=sys.stderr)
 
             print("MCP Client Session closed and server stopped.", file=sys.stderr)
+
 
 
 # Add TestUnifiedServerIntegration and other remaining classes here as simplified versions
@@ -1594,7 +1778,12 @@ class TestFilesystemServerIntegration:
             print("Stdio streams established", file=sys.stderr)
 
             # Create session
-            session = ClientSession(read, write)
+            
+
+            session = ClientSession(
+                read, write,
+                list_roots_callback=list_roots_callback,
+            )
             await session.__aenter__()
             print("Client session created", file=sys.stderr)
 
@@ -1720,14 +1909,14 @@ class TestFilesystemServerIntegration:
 
         # Verify expected tools are available
         expected_tools = [
-            "fs_read_file",
-            "fs_write_file",
+            "fs_read_text_file",
+            "fs_write_text_file",
             "fs_create_directory",
             "fs_list_directory",
             "fs_move_file",
             "fs_search_files",
             "fs_get_file_info",
-            "fs_edit_file",
+            "fs_edit_text_file",
             "fs_get_filesystem_info",
         ]
 
@@ -1751,7 +1940,7 @@ class TestFilesystemServerIntegration:
         # Write file
         write_result = await self.call_tool(
             mcp_filesystem_client_session,
-            "fs_write_file",
+            "fs_write_text_file",
             {"path": str(test_file), "content": test_content},
         )
 
@@ -1762,7 +1951,7 @@ class TestFilesystemServerIntegration:
 
         # Read file
         read_result = await self.call_tool(
-            mcp_filesystem_client_session, "fs_read_file", {"path": str(test_file)}
+            mcp_filesystem_client_session, "fs_read_text_file", {"path": str(test_file)}
         )
 
         assert isinstance(read_result, (list, tuple))

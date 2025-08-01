@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from abc import ABC
 from typing import Any, Dict, List, Sequence, Type
 import platform
-
+import time
 
 
 # region Handler 接口定义（不要修改）
@@ -101,7 +101,10 @@ class Handler(ABC):
 
         # 执行
         print("Executing:", " ".join(ctx.args))
+        start_time = time.time()
         subprocess.call(ctx.args)  # 实际执行
+        end_time = time.time()
+        print(f"Build time: {end_time - start_time:.2f} seconds")
 
         for handler in handlers:
             handler.post_nuitka_build(ctx)

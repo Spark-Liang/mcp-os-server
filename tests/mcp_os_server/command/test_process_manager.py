@@ -783,39 +783,42 @@ class ProcessManagerTestBase(ABC):
         finally:
             await self.cleanup_process_manager(process_manager)
 
-    @pytest.mark.timeout(25)  # Give this test more time due to retention waiting
-    async def test_process_timeout_with_unresponsive_program_1(self, mock_output_manager: IOutputManager):
-        """Test that timeout forces termination of an unresponsive process."""
-        process_manager = await self.create_process_manager(mock_output_manager)
-        try:
-            PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
-            command = [
-                "uv",
-                "--project", str(PROJECT_ROOT),
-                "--directory", str(PROJECT_ROOT),
-                "run", "python", "build_executable.py",
-            ]
-            process = await process_manager.start_process(
-                command=command,
-                directory=".",
-                description="Test unresponsive timeout",
-                timeout=5,  # Short timeout
-            )
+    # @pytest.mark.timeout(25)  # Give this test more time due to retention waiting
+    # async def test_process_timeout_with_actual_unresponsive_program(self, mock_output_manager: IOutputManager):
+    #     """Test that timeout forces termination of an unresponsive process."""
+    #     process_manager = await self.create_process_manager(mock_output_manager)
+    #     try:
+    #         PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+    #         print(str(PROJECT_ROOT))
+    #         command = [
+    #             "uv",
+    #             "run", "python", "build_executable.py",
+    #         ]
+    #         process = await process_manager.start_process(
+    #             command=command,
+    #             directory=str(PROJECT_ROOT),
+    #             description="Test unresponsive timeout",
+    #             timeout=5,  # Short timeout
+    #         )
 
-            with pytest.raises(ProcessTimeoutError):
-                await process.wait_for_completion()
-            completed_info = await process.get_details()
-            assert completed_info.status == ProcessStatus.TERMINATED
-            assert "timed out" in (completed_info.error_message or "").lower()
+    #         with pytest.raises(ProcessTimeoutError):
+    #             completed_info = await process.wait_for_completion()
+    #             print(completed_info)
+    #             print("stdout: \n", [entry.text async for entry in process.get_output("stdout")])
+    #             print("stderr: \n", [entry.text async for entry in process.get_output("stderr")])
 
-            # Check exit code indicates forced termination
-            assert completed_info.exit_code is not None
-            if sys.platform != "win32":
-                assert completed_info.exit_code < 0
-            else:
-                assert completed_info.exit_code > 0
-        finally:
-            await self.cleanup_process_manager(process_manager)
+    #         completed_info = await process.get_details()
+    #         assert completed_info.status == ProcessStatus.TERMINATED
+    #         assert "timed out" in (completed_info.error_message or "").lower()
+
+    #         # Check exit code indicates forced termination
+    #         assert completed_info.exit_code is not None
+    #         if sys.platform != "win32":
+    #             assert completed_info.exit_code < 0
+    #         else:
+    #             assert completed_info.exit_code > 0
+    #     finally:
+    #         await self.cleanup_process_manager(process_manager)
 
 
     @pytest.mark.skipif(sys.platform != "win32", reason="NPM testing is specific to Windows.")

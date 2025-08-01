@@ -2,11 +2,17 @@ import logging
 import re
 from datetime import datetime
 from typing import Dict, List, Optional, Sequence
+import urllib.parse
+from pathlib import Path
+import os
+import sys
 
 import anyio
-from mcp.server.fastmcp import FastMCP
+from mcp.server.session import ServerSession
+from mcp.server.fastmcp import FastMCP, Context
 from mcp.types import TextContent
 from pydantic import Field
+from dotenv import dotenv_values
 
 from .exceptions import (
     CommandExecutionError,
@@ -16,6 +22,7 @@ from .exceptions import (
 )
 from .interfaces import IProcessManager
 from .models import ProcessStatus
+from mcp_os_server.path_utils import list_roots, try_resolve_cursor_path_format
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +71,9 @@ def define_mcp_server(
     default_encoding: str,
     command_default_encoding_map: Dict[str, str],
     default_timeout: int,
+    command_env_map: Dict[str, Dict[str, str]] = {},
+    default_envs: Dict[str, str] = {},
+    project_env_folder: Optional[str] = None,
     # TODO: add other options if needed
 ) -> None:
     """
@@ -75,10 +85,18 @@ def define_mcp_server(
         allowed_commands: A list of commands that are allowed to be executed.
         default_encoding: The default encoding for the command output.
         default_timeout: The default timeout for command execution.
+        command_env_map: A map of commands to their default environment variables.
+        default_envs: default environment variables for all commands.
+        project_env_folder: The folder path to the project environment variables.
     """
 
     logger.info("Allowed commands: %s", allowed_commands)
+    logger.info("Default encoding: %s", default_encoding)
+    logger.info("Default timeout: %s", default_timeout)
     logger.info("Command default encoding map: %s", command_default_encoding_map)
+    logger.info("Command env map: %s", command_env_map)
+    logger.info("Default environment variables: %s", default_envs)
+    logger.info("Project environment folder: %s", project_env_folder)
 
     def get_effective_encoding(
         command: str, user_encoding: Optional[str] = None
@@ -92,14 +110,78 @@ def define_mcp_server(
                 return value
         return default_encoding
 
+    def get_effective_envs(
+        command: str,
+        user_envs: Optional[Dict[str, str | None] | Dict[str, str]] = None,
+        project_envs: Optional[Dict[str, str | None] | Dict[str, str]] = None,
+    ) -> Dict[str, str]:
+        """
+        优先级：
+        1. 用户环境变量
+        2. 项目环境变量
+        3. 命令默认环境变量
+        4. 默认环境变量
+
+        合并规则：如果优先级高的key存在，则优先级低的key不生效。比如高优先级的 key 为 None ，相当于删除低优先级的key。
+        """
+        logger.debug("command: %s", command)
+        logger.debug("command_env_map: %s", command_env_map)
+        logger.debug("default_envs: %s", default_envs)
+        logger.debug("project_envs: %s", project_envs)
+        logger.debug("user_envs: %s", user_envs)
+
+        envs_from_command_env_map = {}
+        for key, value in command_env_map.items():
+            if key.upper() == command.upper():
+                envs_from_command_env_map = value
+                break
+        logger.debug("envs_from_command_env_map: %s", envs_from_command_env_map)
+        result = { k: v for k, v in {
+            **default_envs, **envs_from_command_env_map, **(project_envs or {}), **(user_envs or {})
+        }.items() if v is not None }
+        logger.debug("effective envs for command %s: %s", command, result)
+        return result
+
+    async def get_project_envs(
+        context: Context,
+        command: str,
+        directory: str,
+        project_env_folder: Optional[str] = None,
+    ) -> Dict[str, str | None]:
+        if not project_env_folder:
+            return {}
+
+        directory_path = try_resolve_cursor_path_format(directory).resolve()
+
+        root_info_items = await list_roots(context)
+
+        for root_info_item in root_info_items:
+            root_path = root_info_item.local_path
+            if not root_path:
+                continue
+            if directory_path.is_relative_to(root_path):
+                env_folder = (root_path / project_env_folder ).resolve()
+                logger.debug("env_folder: %s", env_folder)
+                env_files = env_folder.glob("*.env")
+                for env_file in env_files:
+                    env_filename = env_file.name
+                    if env_filename.lower() == command.lower() + ".env":
+                        logger.debug("load env from env_file: %s", env_file)
+                        loaded_envs = dotenv_values(env_file)
+                        logger.debug("loaded_envs: %s", loaded_envs)
+                        return loaded_envs
+                    
+        return {}
+
     @mcp.tool()
     async def command_execute(
+        context: Context,
         command: str = Field(
             description="The command to execute. Only allowed commands are: "
             + ", ".join(allowed_commands)
         ),
         args: Optional[List[str]] = Field(
-            None, description="The arguments for the command."
+            None, description="The argument list for the command. **type: list[str] | None**"
         ),
         directory: str = Field(
             description="The working directory (absolute path) for the command."
@@ -144,6 +226,11 @@ def define_mcp_server(
             effective_encoding = get_effective_encoding(
                 command, encoding if encoding != default_encoding else None
             )
+            envs = get_effective_envs(
+                command,
+                envs,
+                await get_project_envs(context, command, directory, project_env_folder),
+            )
             process = await process_manager.start_process(
                 command=[command] + (args or []),
                 directory=directory,
@@ -173,7 +260,7 @@ def define_mcp_server(
 
             # Always return 3 TextContent items as per FDS specification
             return [
-                TextContent(type="text", text=f"**process {process.pid} end with {info.status.value}(exit code: {info.exit_code})**"),
+                TextContent(type="text", text=f"**process {process.pid} end with {info.status.value} (exit code: {info.exit_code})**"),
                 TextContent(type="text", text=f"---\nstdout:\n---\n{stdout}\n"),
                 TextContent(type="text", text=f"---\nstderr:\n---\n{stderr}\n"),
             ]
@@ -224,12 +311,13 @@ def define_mcp_server(
 
     @mcp.tool()
     async def command_bg_start(
+        context: Context,
         command: str = Field(
             description="The command to execute. Only allowed commands are: "
             + ", ".join(allowed_commands)
         ),
         args: Optional[List[str]] = Field(
-            None, description="The arguments for the command."
+            None, description="The argument list for the command. **type: list[str] | None**"
         ),
         directory: str = Field(
             description="The working directory (absolute path) for the command."
@@ -269,6 +357,10 @@ def define_mcp_server(
         try:
             effective_encoding = get_effective_encoding(
                 command, encoding if encoding != default_encoding else None
+            )
+            envs = get_effective_envs(
+                command, envs, 
+                await get_project_envs(context, command, directory, project_env_folder)
             )
             process = await process_manager.start_process(
                 command=[command] + (args or []),

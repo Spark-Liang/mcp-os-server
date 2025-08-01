@@ -18,6 +18,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
+import os
 
 from .exceptions import ProcessNotFoundError, WebInterfaceError
 from .interfaces import IProcessManager
@@ -89,6 +90,7 @@ class WebManager:
             self._debug_threads
         )
         self._app.get("/debug/tasks", response_class=HTMLResponse)(self._debug_tasks)
+        self._app.get("/debug/logs", response_class=HTMLResponse)(self._debug_logs)
 
         # API routes
         self._app.get("/api/processes")(self._api_get_processes)
@@ -102,6 +104,7 @@ class WebManager:
         self._app.get("/api/debug/threads/download")(self._api_download_thread_stacks)
         self._app.get("/api/debug/tasks")(self._api_get_event_loop_tasks)
         self._app.get("/api/debug/tasks/download")(self._api_download_event_loop_tasks)
+        self._app.get("/api/debug/logs")(self._api_get_logs)
 
     async def start_web_interface(
         self,
@@ -192,6 +195,14 @@ class WebManager:
         if not self._templates:
             raise HTTPException(status_code=500, detail="Templates not initialized")
         return self._templates.TemplateResponse(request, "task_debug.html")
+
+    async def _debug_logs(self, request: Request):
+        if not self._templates:
+            raise HTTPException(status_code=500, detail="Templates not initialized")
+        log_content = self._get_log_content()
+        return self._templates.TemplateResponse(
+            request, "log_viewer.html", {"log_content": log_content}
+        )
 
     # API route handlers
     async def _api_get_processes(
@@ -383,6 +394,10 @@ class WebManager:
                 "Error downloading event loop tasks: %s", e, exc_info=True
             )
             raise HTTPException(status_code=500, detail=str(e))
+
+    async def _api_get_logs(self):
+        log_content = self._get_log_content()
+        return Response(content=log_content, media_type="text/plain")
 
     async def shutdown(self) -> None:
         """Shutdown the Web Manager and release all resources."""
@@ -746,3 +761,13 @@ class WebManager:
             lines.append("")
 
         return "\n".join(lines)
+
+    def _get_log_content(self) -> str:
+        log_path = os.getenv('MCP_LOG_FILE')
+        if not log_path:
+            return "Log file path not set"
+        try:
+            with open(log_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception as e:
+            return f"Error reading log: {str(e)}"

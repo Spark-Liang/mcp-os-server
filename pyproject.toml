@@ -14,10 +14,11 @@ dependencies = [
     "fastapi>=0.115.14",
     "jinja2>=3.1.6",
     "loguru>=0.7.3",
-    "mcp>=1.8.1",
+    "mcp==1.9.4",
     "pillow>=11.2.1",
     "psutil>=7.0.0",
     "pydantic>=2.10.3",
+    "python-dotenv>=1.1.0",
     "pyyaml>=6.0.2",
     "uvicorn>=0.34.3",
 ]
@@ -35,6 +36,8 @@ test = [
     "pytest-timeout>=2.4.0",
     "psutil>=7.0.0",
     "httpx>=0.28.1",
+    # for test case need run build_executable.py
+    "nuitka>=2.7.1",
 ]
 dev = [
     "ruff>=0.0.262",

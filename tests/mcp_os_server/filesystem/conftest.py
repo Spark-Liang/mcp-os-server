@@ -20,23 +20,23 @@ def sample_files(temp_dir):
     """创建示例文件用于测试"""
     # 创建一些测试文件和目录
     test_file = temp_dir / "test.txt"
-    test_file.write_text("Hello, World!")
+    test_file.write_text("测试内容", encoding='gbk')
 
     subdir = temp_dir / "subdir"
     subdir.mkdir()
 
     nested_file = subdir / "nested.txt"
-    nested_file.write_text("Nested content")
+    nested_file.write_text("Nested content", encoding='gbk')
 
     json_file = temp_dir / "data.json"
     json_file.write_text('{"key": "value"}')
 
     return {
-        "temp_dir": temp_dir,
-        "test_file": test_file,
-        "subdir": subdir,
-        "nested_file": nested_file,
-        "json_file": json_file,
+        "dir": str(temp_dir),
+        "test.txt": str(test_file),
+        "subdir": str(subdir),
+        "nested.txt": str(nested_file),
+        "data.json": str(json_file),
     }
 
 

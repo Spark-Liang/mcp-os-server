@@ -9,12 +9,11 @@ from pydantic import BaseModel, Field
 class FileSystemServiceFeature(Enum):
     """文件系统服务功能特性枚举"""
 
-    # 支持 Cursor 目录格式，例如 /e:/Programming/Demo/project/file.txt
-    SupportCursorDirectoryFormat = "support_cursor_directory_format"
+    
 
 
-class FileReadResult(BaseModel):
-    """文件读取结果"""
+class TextFileReadResult(BaseModel):
+    """文本文件读取结果"""
 
     success: bool = Field(..., description="是否成功读取文件")
     content: Optional[str] = Field(None, description="文件内容")

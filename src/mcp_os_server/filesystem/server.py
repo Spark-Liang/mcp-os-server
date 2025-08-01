@@ -6,17 +6,93 @@ import io
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.fastmcp import Context, FastMCP, Image
 from PIL import Image as PILImage
 from pydantic import Field
 
 from ..filtered_fast_mcp import FilteredFastMCP
+from ..path_utils import list_roots, try_resolve_cursor_path_format
 from .filesystem_service import FilesystemService
-from .models import DirectoryItem, FileEditResult, FileInfo, FileReadResult
+from .models import DirectoryItem, FileEditResult, FileInfo, TextFileReadResult
 
 logger = logging.getLogger(__name__)
+
+
+async def check_path_allowed_and_resolve_async(path: str, allowed_dirs: List[str], context: Optional[Context] = None) -> Path:
+    """
+    异步版本的路径检查函数，可以使用 MCP roots
+    
+    Args:
+        path: 要检查的路径
+        allowed_dirs: 允许的目录列表（可以是相对路径或绝对路径）
+        context: MCP上下文（可选，用于获取roots信息）
+        
+    Returns:
+        解析后的绝对路径
+        
+    Raises:
+        PermissionError: 如果路径不被允许访问
+    """
+    from ..path_utils import list_roots
+    
+    # 使用 path_utils 处理 Cursor 格式路径
+    resolved_path = try_resolve_cursor_path_format(path)
+    
+    # 解析为绝对路径
+    abs_path = resolved_path.resolve()
+    
+    # 将 allowed_dirs 转换为绝对路径列表
+    allowed_absolute_dirs = []
+    
+    for allowed_dir in allowed_dirs:
+        allowed_path = Path(allowed_dir)
+        
+        # 如果是绝对路径，直接添加
+        if allowed_path.is_absolute():
+            allowed_absolute_dirs.append(allowed_path.resolve())
+        else:
+            # 如果是相对路径，需要通过多种方式解析
+            
+            # 只允许通过 MCP roots 解析
+            if context:
+                try:
+                    root_items = await list_roots(context)
+                    for root_item in root_items:
+                        if root_item.local_path:
+                            # 尝试将相对路径附加到每个 root
+                            root_resolved = (root_item.local_path / allowed_path).resolve()
+                            if root_resolved.exists():
+                                allowed_absolute_dirs.append(root_resolved)
+                except Exception as e:
+                    logger.debug("获取 MCP roots 失败: %s", e)
+            else:
+                # 对于相对路径，使用当前工作目录解析
+                cwd_resolved = (Path.cwd() / allowed_path).resolve()
+                if cwd_resolved.exists():
+                    allowed_absolute_dirs.append(cwd_resolved)
+                # 直接解析
+                try_resolved = allowed_path.resolve()
+                if try_resolved.exists() and try_resolved not in allowed_absolute_dirs:
+                    allowed_absolute_dirs.append(try_resolved)
+    
+    # 如果没有找到任何有效的允许目录，至少添加原始配置的解析路径
+    if not allowed_absolute_dirs:
+        for allowed_dir in allowed_dirs:
+            allowed_absolute_dirs.append(Path(allowed_dir).resolve())
+    
+    # 检查是否在允许的目录中
+    for allowed_path in allowed_absolute_dirs:
+        try:
+            if abs_path.is_relative_to(allowed_path):
+                return abs_path
+        except ValueError:
+            # 不同驱动器等情况
+            continue
+    
+    raise PermissionError(f"路径不在允许的目录中: {path}")
 
 
 def _do_load_image_by_pillow(path: str, max_bytes: Optional[int] = None) -> Image:
@@ -82,19 +158,12 @@ def _do_load_image_by_pillow(path: str, max_bytes: Optional[int] = None) -> Imag
         )
 
 
-def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
+def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService, allowed_dirs: List[str]):
     """定义MCP服务器相关配置"""
 
-    def __load_image_by_pillow(path: str, max_bytes: Optional[int] = None) -> Image:
-        """读取图片文件并转换为Image对象"""
-        logger.info("读取图片文件: %s", path)
-
-        # 使用assert_is_allowed_and_resolve检查路径并获取解析后的Path对象
-        resolved_path = filesystem_service.assert_is_allowed_and_resolve(path)
-
-        return _do_load_image_by_pillow(str(resolved_path), max_bytes)
-
-    async def _do_get_filesystem_info() -> Dict[str, Any]:
+    async def _do_get_filesystem_info(
+        context: Optional[Context] = None,  # mcp 1.9.4 中，context 参数注入有问题，暂时允许为空
+    ) -> Dict[str, Any]:
         """
         获取文件系统服务配置信息
 
@@ -107,26 +176,21 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
             "server_name": "Filesystem Server",
             "version": __version__,
             "work_dir": os.getcwd(),
-            "allowed_directories": filesystem_service.list_allowed_directories(),
-            "capabilities": [
-                "read_file",
-                "read_image",
-                "read_multiple_images",
-                "write_file",
-                "create_directory",
-                "list_directory",
-                "move_file",
-                "search_files",
-                "get_file_info",
-                "edit_file",
-            ],
+            "allowed_directories": [str(Path(d).resolve()) for d in allowed_dirs],
+            "roots": (
+                [root.model_dump(mode="json") for root in await list_roots(context)]
+                if context
+                else []
+            ),
         }
 
     # ===== 工具 (Tools) =====
 
     @mcp.tool()
-    async def fs_read_file(
-        path: str = Field(..., description="要读取的文件的绝对路径")
+    async def fs_read_text_file(
+        context: Context,
+        path: str = Field(..., description="要读取的文件的路径。如果路径是相对路径，则是相对 roots 的相对路径"),
+        encoding: str = Field("utf-8", description="文件编码"),
     ) -> str:
         """
         读取文件内容
@@ -137,12 +201,17 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
         Returns:
             文件的文本内容
         """
-        return await filesystem_service.read_file(path)
+        # 创建一个简化的context来传递给异步函数
+        # 这里我们暂时不使用MCP context，因为工具函数中无法直接获取
+        resolved_path = await check_path_allowed_and_resolve_async(path, allowed_dirs, context)
+        return await filesystem_service.read_text_file(str(resolved_path), encoding)
 
     @mcp.tool()
-    async def fs_read_multiple_files(
-        paths: List[str] = Field(..., description="要读取的文件的绝对路径列表")
-    ) -> Dict[str, FileReadResult]:
+    async def fs_read_multiple_text_files(
+        context: Context,
+        paths: List[str] = Field(..., description="要读取的文件的路径列表，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径"),
+        encoding: str = Field("utf-8", description="文件编码"),
+    ) -> Dict[str, TextFileReadResult]:
         """
         读取多个文件的内容
 
@@ -152,68 +221,24 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
         Returns:
             包含每个文件读取结果的字典
         """
-        return await filesystem_service.read_multiple_files(paths)
-
-    default_max_bytes = 1024 * 1024 * 10
-
-    @mcp.tool()
-    async def fs_read_image(
-        path: str = Field(..., description="要读取的图片文件的绝对路径"),
-        max_bytes: int = Field(
-            default=default_max_bytes,
-            description="最大字节数限制，超过此大小将创建缩略图",
-            ge=0,
-        ),
-    ) -> Image:
-        """
-        读取图片文件并返回为Image内容
-
-        Args:
-            path: 要读取的图片文件的绝对路径
-            max_bytes: 最大字节数限制，如果超过此大小将创建缩略图
-
-        Returns:
-            图片内容（ImageContent对象）
-        """
-
-        try:
-            return __load_image_by_pillow(path, max_bytes)
-        except BaseException as e:
-            logger.error("读取图片文件失败: %s", e, exc_info=True)
-            raise e
-
-    @mcp.tool()
-    async def fs_read_multiple_images(
-        paths: List[str] = Field(..., description="要读取的图片文件的绝对路径列表"),
-        max_bytes: int = Field(
-            default=default_max_bytes,
-            description="最大字节数限制，超过此大小将创建缩略图，默认10MB",
-            ge=0,
-        ),
-    ) -> List[Image]:
-        """
-        读取多个图片文件并返回为Image内容列表
-
-        Args:
-            paths: 要读取的图片文件的绝对路径列表
-            max_bytes: 最大字节数限制，如果超过此大小将创建缩略图
-
-        Returns:
-            图片内容列表（ImageContent对象列表）
-        """
-        images = []
+        # 检查所有路径权限
+        results = {}
         for path in paths:
             try:
-                images.append(__load_image_by_pillow(path, max_bytes))
-            except BaseException as e:
-                logger.error("读取图片文件失败: %s", e, exc_info=True)
-                raise e
-        return images
+                resolved_path = await check_path_allowed_and_resolve_async(path, allowed_dirs, context)
+                content = await filesystem_service.read_text_file(str(resolved_path), encoding)
+                results[path] = TextFileReadResult(success=True, content=content, error=None)
+            except Exception as e:
+                results[path] = TextFileReadResult(success=False, content=None, error=str(e))
+        return results
+
 
     @mcp.tool()
-    async def fs_write_file(
-        path: str = Field(..., description="要写入的文件的绝对路径"),
+    async def fs_write_text_file(
+        context: Context,
+        path: str = Field(..., description="要写入的文件的路径，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径"),
         content: str = Field(..., description="要写入的内容"),
+        encoding: str = Field("utf-8", description="文件编码"),
     ) -> str:
         """
         写入文件内容
@@ -225,61 +250,155 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
         Returns:
             操作结果消息
         """
-        await filesystem_service.write_file(path, content)
+        resolved_path = await check_path_allowed_and_resolve_async(path, allowed_dirs, context)
+        await filesystem_service.write_text_file(str(resolved_path), content, encoding)
         return f"文件已成功写入: {path}"
 
     @mcp.tool()
+    async def fs_edit_text_file(
+        context: Context,
+        path: str = Field(..., description="要编辑的文件的路径，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径"),
+        edits: List[Dict[str, str]] = Field(
+            ..., description="编辑操作列表，每个操作包含 oldText 和 newText"
+        ),
+        dry_run: bool = Field(False, description="是否为预览模式（不实际修改文件）"),
+        encoding: str = Field("utf-8", description="文件编码"),
+    ) -> FileEditResult:
+        """
+        编辑文件内容
+
+        Args:
+            path: 要编辑的文件的路径，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径
+            edits: 编辑操作列表，每个操作包含 oldText 和 newText
+            dry_run: 是否为预览模式（不实际修改文件）
+
+        Returns:
+            编辑结果信息
+        """
+        resolved_path = await check_path_allowed_and_resolve_async(path, allowed_dirs, context)
+        return await filesystem_service.edit_text_file(str(resolved_path), edits, dry_run, encoding)
+
+    default_max_bytes = 1024 * 1024 * 10
+
+    @mcp.tool()
+    async def fs_read_image(
+        context: Context,
+        path: str = Field(..., description="要读取的图片文件的路径，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径"),
+        max_bytes: int = Field(
+            default=default_max_bytes,
+            description="如果超过此大小将创建缩略图",
+            ge=0,
+        ),
+    ) -> Image:
+        """
+        读取图片文件并返回为Image内容
+
+        Args:
+            path: 要读取的图片文件的路径，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径
+            max_bytes: 最大字节数限制，如果超过此大小将创建缩略图
+
+        Returns:
+            图片内容（ImageContent对象）
+        """
+
+        try:
+            # 检查路径权限
+            resolved_path = await check_path_allowed_and_resolve_async(path, allowed_dirs, context)
+            return _do_load_image_by_pillow(str(resolved_path), max_bytes)
+        except BaseException as e:
+            logger.error("读取图片文件失败: %s", e, exc_info=True)
+            raise e
+
+    @mcp.tool()
+    async def fs_read_multiple_images(
+        context: Context,
+        paths: List[str] = Field(..., description="要读取的图片文件的路径列表，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径"),
+        max_bytes: int = Field(
+            default=default_max_bytes,
+            description="最大字节数限制，如果超过此大小将创建缩略图，默认10MB",
+            ge=0,
+        ),
+    ) -> List[Image]:
+        """
+        读取多个图片文件并返回为Image内容列表
+
+        Args:
+            paths: 要读取的图片文件的路径列表，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径
+            max_bytes: 最大字节数限制，如果超过此大小将创建缩略图
+
+        Returns:
+            图片内容列表（ImageContent对象列表）
+        """
+        images = []
+        for path in paths:
+            try:
+                resolved_path = await check_path_allowed_and_resolve_async(path, allowed_dirs, context)
+                images.append(_do_load_image_by_pillow(str(resolved_path), max_bytes))
+            except BaseException as e:
+                logger.error("读取图片文件失败: %s", e, exc_info=True)
+                raise e
+        return images
+
+    @mcp.tool()
     async def fs_create_directory(
-        path: str = Field(..., description="要创建的目录的绝对路径")
+        context: Context,
+        path: str = Field(..., description="要创建的目录的路径，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径")
     ) -> str:
         """
         创建目录
 
         Args:
-            path: 要创建的目录的绝对路径
+            path: 要创建的目录的路径，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径
 
         Returns:
             操作结果消息
         """
-        await filesystem_service.create_directory(path)
+        resolved_path = await check_path_allowed_and_resolve_async(path, allowed_dirs, context)
+        await filesystem_service.create_directory(str(resolved_path))
         return f"目录已成功创建: {path}"
 
     @mcp.tool()
     async def fs_list_directory(
-        path: str = Field(..., description="要列出的目录的绝对路径")
+        context: Context,
+        path: str = Field(..., description="要列出的目录的路径，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径")
     ) -> List[DirectoryItem]:
         """
         列出目录内容
 
         Args:
-            path: 要列出的目录的绝对路径
+            path: 要列出的目录的路径，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径
 
         Returns:
             目录内容列表，包含文件和子目录信息
         """
-        return await filesystem_service.list_directory(path)
+        resolved_path = await check_path_allowed_and_resolve_async(path, allowed_dirs, context)
+        return await filesystem_service.list_directory(str(resolved_path))
 
     @mcp.tool()
     async def fs_move_file(
-        source: str = Field(..., description="源文件的绝对路径"),
-        destination: str = Field(..., description="目标文件的绝对路径"),
+        context: Context,
+        source: str = Field(..., description="源文件的路径，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径"),
+        destination: str = Field(..., description="目标文件的路径，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径"),
     ) -> str:
         """
         移动或重命名文件/目录
 
         Args:
-            source: 源文件的绝对路径
-            destination: 目标文件的绝对路径
+            source: 源文件的路径，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径
+            destination: 目标文件的路径，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径
 
         Returns:
             操作结果消息
         """
-        await filesystem_service.move_file(source, destination)
+        resolved_source = await check_path_allowed_and_resolve_async(source, allowed_dirs, context)
+        resolved_dest = await check_path_allowed_and_resolve_async(destination, allowed_dirs, context)
+        await filesystem_service.move_file(str(resolved_source), str(resolved_dest))
         return f"文件已成功移动: {source} -> {destination}"
 
     @mcp.tool()
     async def fs_search_files(
-        path: str = Field(..., description="搜索起始目录的绝对路径"),
+        context: Context,
+        path: str = Field(..., description="搜索起始目录的路径，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径"),
         pattern: str = Field(
             ..., description="搜索模式（支持glob模式，如 *.txt, *.py）"
         ),
@@ -291,91 +410,89 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
         搜索文件
 
         Args:
-            path: 搜索起始目录的绝对路径
+            path: 搜索起始目录的路径，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径
             pattern: 搜索模式（支持glob模式，如 *.txt, *.py）
             exclude_patterns: 要排除的模式列表（可选）
 
         Returns:
             匹配的文件路径列表
         """
-        return await filesystem_service.search_files(path, pattern, exclude_patterns)
+        resolved_path = await check_path_allowed_and_resolve_async(path, allowed_dirs, context)
+        return await filesystem_service.search_files(str(resolved_path), pattern, exclude_patterns)
 
     @mcp.tool()
     async def fs_get_file_info(
-        path: str = Field(..., description="文件或目录的绝对路径")
+        context: Context,
+        path: str = Field(..., description="文件或目录的路径，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径")
     ) -> FileInfo:
         """
         获取文件或目录的详细信息
 
         Args:
-            path: 文件或目录的绝对路径
+            path: 文件或目录的路径，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径
 
         Returns:
             包含文件信息的字典（类型、大小、时间等）
         """
-        return await filesystem_service.get_file_info(path)
+        resolved_path = await check_path_allowed_and_resolve_async(path, allowed_dirs, context)
+        return await filesystem_service.get_file_info(str(resolved_path))
 
     @mcp.tool()
-    async def fs_edit_file(
-        path: str = Field(..., description="要编辑的文件的绝对路径"),
-        edits: List[Dict[str, str]] = Field(
-            ..., description="编辑操作列表，每个操作包含 oldText 和 newText"
-        ),
-        dry_run: bool = Field(False, description="是否为预览模式（不实际修改文件）"),
-    ) -> FileEditResult:
-        """
-        编辑文件内容
-
-        Args:
-            path: 要编辑的文件的绝对路径
-            edits: 编辑操作列表，每个操作包含 oldText 和 newText
-            dry_run: 是否为预览模式（不实际修改文件）
-
-        Returns:
-            编辑结果信息
-        """
-        return await filesystem_service.edit_file(path, edits, dry_run)
-
-    @mcp.tool()
-    async def fs_get_filesystem_info() -> Dict[str, Any]:
+    async def fs_get_filesystem_info(context: Context) -> Dict[str, Any]:
         """
         获取文件系统服务配置信息
         """
-        return await _do_get_filesystem_info()
+        return await _do_get_filesystem_info(context)
 
     # ===== 资源 (Resources) =====
 
     @mcp.resource("file://{path}")
-    async def read_file_resource(path: str) -> str:
+    async def read_file_resource(
+        # context: Context, # mcp 1.9.4 中，context 参数注入有问题，暂时不使用
+        path: str
+    ) -> str:
         """
         作为资源读取文件内容
 
         Args:
-            path: 文件的绝对路径
+            path: 文件的路径，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径
 
         Returns:
             文件内容
         """
-        return await filesystem_service.read_file(path)
+        resolved_path = await check_path_allowed_and_resolve_async(
+            path, allowed_dirs,
+            # context # mcp 1.9.4 中，context 参数注入有问题，暂时不使用
+        )
+        return await filesystem_service.read_text_file(str(resolved_path))
 
     @mcp.resource("directory://{path}")
-    async def list_directory_resource(path: str) -> str:
+    async def list_directory_resource(
+        # context: Context, # mcp 1.9.4 中，context 参数注入有问题，暂时不使用
+        path: str
+    ) -> str:
         """
         作为资源列出目录内容
 
         Args:
-            path: 目录的绝对路径
+            path: 目录的路径，可以是绝对路径或相对路径。如果路径是相对路径，则是相对 roots 的相对路径
 
         Returns:
             JSON格式的目录内容列表
         """
-        items = await filesystem_service.list_directory(path)
+        resolved_path = await check_path_allowed_and_resolve_async(
+            path, allowed_dirs,
+            # context # mcp 1.9.4 中，context 参数注入有问题，暂时不使用
+        )
+        items = await filesystem_service.list_directory(str(resolved_path))
         return json.dumps(
             [item.model_dump() for item in items], indent=2, ensure_ascii=False
         )
 
     @mcp.resource("config://filesystem")
-    async def get_config_resource() -> str:
+    async def get_config_resource(
+        # context: Context, # mcp 1.9.4 中，context 参数注入有问题，暂时不使用
+    ) -> str:
         """
         获取文件系统服务配置信息
 
@@ -383,7 +500,13 @@ def define_mcp_server(mcp: FastMCP, filesystem_service: FilesystemService):
             JSON格式的配置信息
         """
 
-        return json.dumps(await _do_get_filesystem_info(), indent=2, ensure_ascii=False)
+        return json.dumps(
+            await _do_get_filesystem_info(
+                # context # mcp 1.9.4 中，context 参数注入有问题，暂时不使用
+            ),
+            indent=2,
+            ensure_ascii=False,
+        )
 
 
 def create_server(
@@ -414,7 +537,7 @@ def create_server(
         # 将环境变量中的目录添加到允许列表中
         allowed_dirs.extend(env_allowed_dirs)
 
-    filesystem_service = FilesystemService(allowed_dirs, features=features)
+    filesystem_service = FilesystemService(features=features)
     mcp = FilteredFastMCP(name="filesystem", version="0.1.0", host=host, port=port)
-    define_mcp_server(mcp, filesystem_service)
+    define_mcp_server(mcp, filesystem_service, allowed_dirs)
     return mcp
