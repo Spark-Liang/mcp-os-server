@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import re
 import urllib.parse
 from typing import List, Optional
 from pathlib import Path
@@ -14,31 +15,26 @@ logger = logging.getLogger(__name__)
 
 
 
-def support_cursor_path_format() -> bool:
-    """
-    是否支持 Cursor 目录格式路径转换
-    """
-    return os.getenv("SUPPORT_CURSOR_PATH_FORMAT", "false").lower() == "true"
 
+def try_resolve_win_path_in_url_format(path: str) -> Path:
+    """
+    尝试将 Windows 的 URL 格式路径转换为本地路径。
 
-def try_resolve_cursor_path_format(path: str) -> Path:
+    Example:
+        /e:/... -> e:/...
+        /E:/... -> E:/...
+        /ef:/... -> ef:/...
+        /ef:/...-> ef:/...
     """
-    尝试将 Cursor 格式的路径转换为本地路径。如果不启用或者不符合 Cursor 格式的路径，则返回原路径。
-    """
-    if not support_cursor_path_format():
-        return Path(path)
-    
-    # 如果启用了 Cursor 目录格式支持，需要进行路径转换
-    # 严格匹配 /<盘符>: 格式，其中盘符必须是字母，可以为多个字母的盘符，比如 /e:/... 或 /ef:/...
+    # 使用正则表达式，严格匹配 /<盘符>: 格式，其中盘符必须是字母，可以为多个字母的盘符，比如 /e:/... 或 /ef:/...
+    match = re.match(r"^/([a-zA-Z]+):/(.*)", path)    
+    logger.debug("match: %s", match)
     if (
         sys.platform.startswith("win")
-        and path.startswith("/")
-        and len(path) > 3
-        and path[2] == ":"
-        and path[1].isalpha()
+        and match
     ):
         # 处理 /e:/... 格式的路径，转换为 e:/...
-        path = path[1:]
+        return Path(match.group(1)+":/") / Path(match.group(2))
     return Path(path)
 
 
@@ -57,8 +53,12 @@ async def list_roots(context: Context) -> List[RootInfoItem]:
     root_info_items = []
     for root in roots.roots:
         if root.uri.scheme == "file":
+            logger.debug("root.uri.path: %s", root.uri.path)
             root_path_str = urllib.parse.unquote(root.uri.path) if root.uri.path else "/"
-            root_path = try_resolve_cursor_path_format(root_path_str)
+            logger.debug("root_path_str: %s", root_path_str)
+            root_path = try_resolve_win_path_in_url_format(root_path_str).resolve()
+            logger.debug("root_path: %s", root_path)
         root_info_item = RootInfoItem(root=root, local_path=root_path)
         root_info_items.append(root_info_item)
+    logger.debug("root_info_items: %s", root_info_items)
     return root_info_items

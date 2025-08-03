@@ -1,0 +1,2 @@
+This is a test file for relative path access.
+If readable via relative path, the test will pass for accessible cases. 

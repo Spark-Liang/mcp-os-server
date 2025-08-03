@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import AsyncGenerator, List, Optional, Sequence, Any
 from datetime import datetime
+import json
 
 import anyio
 import pytest
@@ -103,13 +104,15 @@ def _get_server_start_params(
     return cmd, args
 
 async def list_roots_callback(context: RequestContext["ClientSession", Any]) -> ListRootsResult:
-    return ListRootsResult(
+    result = ListRootsResult(
         roots=[
             Root(uri=FileUrl(f"file://{PROJECT_ROOT.absolute()}"))
         ],
-    )
+    );
+    print(f"list_roots_callback result: {result}", file=sys.stderr)
+    return result
 
-# Helper functions for validating output formats according to FDS specifications
+# region Helper functions for validating output formats according to FDS specifications
 def validate_process_list_table(text: str) -> bool:
     """Validate that the text contains a proper markdown table for process list."""
     lines = text.strip().split("\n")
@@ -266,7 +269,7 @@ def validate_error_message_format(text: str, error_type: str) -> bool:
     pattern = error_patterns[error_type]
     return pattern in text
 
-
+# endregion
 
 @pytest.fixture(autouse=True) # 使用 autouse=True 让 fixture 自动应用于所有测试，无需显式传入
 def inject_test_name(request):
@@ -1736,6 +1739,8 @@ class TestCommandServerStreamableHttpIntegration(BaseCommandServerIntegrationTes
 class TestFilesystemServerIntegration:
     """Integration tests for the MCP Filesystem Server via MCP protocol."""
 
+    test_name: Optional[str] = None
+
     @pytest.fixture(scope="function")
     async def mcp_filesystem_client_session(
         self, tmp_path
@@ -1749,12 +1754,21 @@ class TestFilesystemServerIntegration:
 
         # Set up environment variables for the filesystem server
         env = os.environ.copy()
-        env["ALLOWED_DIRS"] = str(tmp_path)
-
+        env["ALLOWED_DIRS"] = ",".join([
+            str(tmp_path), str(project_root),
+            # 相对路径测试
+            "tests/resources"
+        ])
+        cleaned_test_name = re.sub(r'[^\w\d_.-]', '_', self.test_name) if self.test_name else "unknown_test"
+        log_file_path = PROJECT_ROOT / ".tmp" / f"mcp_os_server_filesystem_{cleaned_test_name}.log"
+        env["LOG_FILE_PATH"] = str(log_file_path)
+        print(f"Logging to: {log_file_path}", file=sys.stderr)
         cmd, args = _get_server_start_params(
             server_type="filesystem", mode="stdio", project_root=project_root, env=env
         )
 
+        args += ["--debug"]
+        print(f"args: {args}", file=sys.stderr)
         server_params = StdioServerParameters(
             command=cmd,
             args=args,
@@ -1960,3 +1974,63 @@ class TestFilesystemServerIntegration:
         assert read_result[0].text == test_content
 
         print("✅ Filesystem write/read test passed", file=sys.stderr)
+
+    @pytest.mark.anyio
+    async def test_get_filesystem_info(self, mcp_filesystem_client_session: ClientSession):
+        """Test retrieving filesystem information including roots."""
+        print("Running test_get_filesystem_info...", file=sys.stderr)
+
+        result = await self.call_tool(
+            mcp_filesystem_client_session, "fs_get_filesystem_info", {}
+        )
+
+        assert len(result) == 1
+        assert isinstance(result[0], TextContent)
+
+        try:
+            info = json.loads(result[0].text)
+            assert "roots" in info
+            assert len(info["roots"]) == 1
+            assert info["roots"][0]["root"]["uri"] == PROJECT_ROOT.absolute().as_uri()
+        except json.JSONDecodeError:
+            pytest.fail("Returned text is not valid JSON")
+
+        print("✅ Filesystem info test passed", file=sys.stderr)
+
+    @pytest.mark.anyio
+    async def test_read_chinese_file_relative(self, mcp_filesystem_client_session: ClientSession):
+        """Test reading file with Chinese name and content via relative path."""
+        print("Running test_read_chinese_file_relative...", file=sys.stderr)
+
+        relative_path = "tests/resources/中文测试.txt"
+        expected_content = "你好，世界！\n这是一个带有中文内容的测试文件。\nHello, world! This is a test file with Chinese content."
+
+        result = await self.call_tool(
+            mcp_filesystem_client_session,
+            "fs_read_text_file",
+            {"path": relative_path, "encoding": "utf-8"}
+        )
+
+        assert len(result) == 1
+        assert isinstance(result[0], TextContent)
+        assert result[0].text.strip() == expected_content.strip()
+
+        print("✅ Chinese relative path read test passed", file=sys.stderr)
+
+    @pytest.mark.anyio
+    async def test_inaccessible_relative_path(self, mcp_filesystem_client_session: ClientSession):
+        """Test denial of access to inaccessible relative path."""
+        print("Running test_inaccessible_relative_path...", file=sys.stderr)
+
+        inaccessible_path = "../../../../windows/system32/config/sam"  # Example system file path
+
+        
+        result = await self.call_tool(
+            mcp_filesystem_client_session,
+            "fs_read_text_file",
+            {"path": inaccessible_path}
+        )
+        assert len(result) == 1
+        assert isinstance(result[0], TextContent)
+        assert "PermissionError" in result[0].text or "路径不在允许的目录中" in result[0].text
+        print("✅ Inaccessible relative path denial test passed", file=sys.stderr)

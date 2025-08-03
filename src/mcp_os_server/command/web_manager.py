@@ -130,6 +130,7 @@ class WebManager:
             raise WebInterfaceError("WebManager not initialized with command executor")
 
         try:
+            self._logger.debug(f"Try to start web interface on {host}:{port} with debug: {debug}")
             if url_prefix:
                 # For URL prefix support, we could use a sub-application
                 # For now, we'll note this as a potential enhancement
@@ -155,15 +156,18 @@ class WebManager:
     def _run_uvicorn_server(self, host: str, port: int, debug: bool) -> None:
         """Run Uvicorn server with anyio backend."""
         try:
+            self._logger.debug(f"Try to run uvicorn server on {host}:{port} with debug: {debug}")
             config = uvicorn.Config(
                 app=self._app,
                 host=host,
                 port=port,
-                log_level="debug" if debug else "info",
-                reload=debug,
+                # log_level="debug" if debug else "info",
+                log_config=None,
+                reload=False,
                 access_log=debug,
                 loop="auto",  # Let uvicorn choose the best event loop
             )
+            self._logger.info(f"uvicorn config: {config}")
             self._server = uvicorn.Server(config)
             self._server.run()
         except Exception as e:

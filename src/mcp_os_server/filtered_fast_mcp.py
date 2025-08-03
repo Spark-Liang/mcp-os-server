@@ -1,13 +1,18 @@
 """Filtered FastMCP implementation for environment variable based filtering."""
 
 import os
-from typing import List
+from typing import Any, List, Sequence
 from urllib.parse import urlparse
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import Resource as MCPResource
 from mcp.types import ResourceTemplate as MCPResourceTemplate
 from mcp.types import Tool as MCPTool
+from mcp.types import Content
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def should_include_tool(tool_name: str) -> bool:
@@ -94,3 +99,10 @@ class FilteredFastMCP(FastMCP):
             if should_include_resource(resource_type):
                 filtered_templates.append(template)
         return filtered_templates
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Sequence[Content]:
+        try:
+            return await super().call_tool(name, arguments)
+        except Exception as e:
+            logger.error(f"Error executing tool {name}: {e}", exc_info=True)
+            raise e

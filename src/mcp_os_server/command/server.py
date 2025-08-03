@@ -22,7 +22,7 @@ from .exceptions import (
 )
 from .interfaces import IProcessManager
 from .models import ProcessStatus
-from mcp_os_server.path_utils import list_roots, try_resolve_cursor_path_format
+from mcp_os_server.path_utils import list_roots, try_resolve_win_path_in_url_format
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +151,7 @@ def define_mcp_server(
         if not project_env_folder:
             return {}
 
-        directory_path = try_resolve_cursor_path_format(directory).resolve()
+        directory_path = try_resolve_win_path_in_url_format(directory).resolve()
 
         root_info_items = await list_roots(context)
 

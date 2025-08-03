@@ -6,7 +6,7 @@ which includes a command server implementation, filesystem server implementation
 and web management interface.
 """
 
-import asyncio
+import anyio
 import logging
 import os
 import platform
@@ -23,12 +23,14 @@ import click
 from mcp.types import TextContent
 from pydantic import BaseModel, Field
 
+from .filtered_fast_mcp import FilteredFastMCP
+
 from .command.interfaces import IProcessManager
 from .command.output_manager import OutputManager
 from .command.process_manager_anyio import AnyioProcessManager
 from .command.web_manager import WebManager
-from .filesystem.server import create_server as create_filesystem_server
-from .filtered_fast_mcp import FilteredFastMCP
+from .filesystem.filesystem_service import FilesystemService
+
 import re
 from collections import defaultdict
 
@@ -36,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 def setup_logger(mode: str, debug: bool = False) -> logging.Logger:
     """Setup logger based on server mode and debug flag."""
-    logger = logging.getLogger("mcp_os_server")
+    logger = logging.getLogger("")
 
     # Remove existing handlers
     for handler in logger.handlers[:]:
@@ -56,19 +58,17 @@ def setup_logger(mode: str, debug: bool = False) -> logging.Logger:
 
     handler = logging.StreamHandler(stream)
     formatter = logging.Formatter(
-        "%(asctime)s - %(levelname)s - %(name)s:%(lineno)d - %(message)s"
+        "%(asctime)s - %(levelname)s - %(threadName)s - %(name)s:%(lineno)d - %(message)s"
     )
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
     # 通过 LOG_FILE_PATH 配置文件路径
     log_file_path = os.getenv("LOG_FILE_PATH")
-    if not log_file_path:
-        log_file_path = tempfile.mktemp(prefix="mcp_os_server_", suffix=".log")
-    os.environ['MCP_LOG_FILE'] = log_file_path
-    file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
+    if log_file_path:
+        file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
 
     logger.setLevel(level)
     logger.debug(f"debug: {debug}")
@@ -76,7 +76,7 @@ def setup_logger(mode: str, debug: bool = False) -> logging.Logger:
     logger.info(f"sys.getdefaultencoding(): {sys.getdefaultencoding()}")
     logger.info(f"sys.getfilesystemencoding(): {sys.getfilesystemencoding()}")
 
-    return logger
+    return logging.getLogger(__name__)
 
 
 def parse_allowed_commands(allowed_commands_str: str) -> List[str]:
@@ -91,7 +91,12 @@ def parse_allowed_commands(allowed_commands_str: str) -> List[str]:
 
 
 def parse_allowed_directories(allowed_dirs_str: str) -> List[str]:
-    """Parse the ALLOWED_DIRS environment variable."""
+    """
+    Parse the ALLOWED_DIRS environment variable.
+    
+    Example:
+        ALLOWED_DIRS="C:\\Users\\23515\\AppData\\Local\\Temp,.\\"
+    """
     if not allowed_dirs_str:
         return []
 
@@ -231,10 +236,11 @@ async def _run_filesystem_server(
     port: int,
     path: str,
     web_path: str,
+    debug: bool,
 ):
     """Run the filesystem server in the specified mode."""
     # Setup logger based on mode
-    logger = setup_logger(mode)
+    logger = setup_logger(mode, debug)
 
     # Parse environment variables
     allowed_dirs_str = os.getenv("ALLOWED_DIRS", "")
@@ -259,10 +265,25 @@ async def _run_filesystem_server(
             ", ".join([f.name for f in filesystem_service_features]),
         )
 
+    default_encoding = os.getenv("DEFAULT_ENCODING", get_default_encoding())
+    logger.info(f"default_encoding: {default_encoding}")
+
     # Create filesystem server
     try:
-        mcp = create_filesystem_server(
-            allowed_dirs, features=filesystem_service_features, host=host, port=port
+        if not allowed_dirs:
+            raise ValueError("至少需要指定一个允许的目录")
+
+        filesystem_service = FilesystemService(features=filesystem_service_features)
+        mcp = FilteredFastMCP(
+            name="filesystem", version="0.1.0", host=host, port=port
+        )
+
+        from .filesystem.server import define_mcp_server
+        define_mcp_server(
+            mcp=mcp, 
+            filesystem_service=filesystem_service, 
+            allowed_dirs=allowed_dirs, 
+            default_encoding=default_encoding
         )
     except Exception as e:
         logger.error("Failed to initialize filesystem server: %s", e, exc_info=True)
@@ -412,11 +433,15 @@ async def _run_unified_server(
 
     # Define filesystem server tools if allowed
     if allowed_dirs:
+        from .filesystem.server import define_mcp_server
         from .filesystem.filesystem_service import FilesystemService
-        from .filesystem.server import define_mcp_server as define_filesystem_server
-
-        filesystem_service = FilesystemService(features=filesystem_service_features)
-        define_filesystem_server(mcp, filesystem_service, allowed_dirs)
+        
+        define_mcp_server(
+            mcp=mcp,
+            filesystem_service=FilesystemService(features=filesystem_service_features),
+            allowed_dirs=allowed_dirs,
+            default_encoding=default_encoding,
+        )
 
     # Add command_open_web_manager tool if web manager is enabled
     if enable_web_manager:
@@ -580,8 +605,9 @@ def command_server(
     debug: bool,
 ):
     """Start the MCP Command Server with optional web management interface."""
-    asyncio.run(
-        _run_command_server(
+    try:
+        anyio.run(
+            _run_command_server,
             mode,
             host,
             port,
@@ -592,7 +618,9 @@ def command_server(
             enable_web_manager,
             debug,
         )
-    )
+        logger.info("Server exited")
+    except BaseException as e:
+        logger.error("Server exited with error: %s", e, exc_info=True)
 
 
 async def _run_command_server(
@@ -807,16 +835,34 @@ async def _run_command_server(
     default="/web",
     help="Web interface path for SSE/HTTP modes (default: /web)",
 )
+@click.option(
+    "--debug",
+    is_flag=True,
+    default=False,
+    help="Enable debug mode (sets logging to DEBUG and uses Flask development server for web interface)",
+)
 def filesystem_server(
     mode: str,
     host: str,
     port: int,
     path: str,
     web_path: str,
+    debug: bool,
 ):
     """Start the MCP Filesystem Server."""
-    asyncio.run(_run_filesystem_server(mode, host, port, path, web_path))
-
+    try:
+        anyio.run(
+            _run_filesystem_server,
+            mode,
+            host,
+            port,
+            path,
+            web_path,
+            debug,
+        )
+        logger.info("Server exited")
+    except BaseException as e:
+        logger.error("Server exited with error: %s", e, exc_info=True)
 
 @main.command("unified-server")
 @click.option(
@@ -876,8 +922,9 @@ def unified_server(
     debug: bool,
 ):
     """Start the MCP Unified Server with both command and filesystem capabilities."""
-    asyncio.run(
-        _run_unified_server(
+    try:
+        anyio.run(
+            _run_unified_server,
             mode,
             host,
             port,
@@ -888,7 +935,9 @@ def unified_server(
             enable_web_manager,
             debug,
         )
-    )
+        logger.info("Server exited")
+    except BaseException as e:
+        logger.error("Server exited with error: %s", e, exc_info=True)
 
 
 if __name__ == "__main__":

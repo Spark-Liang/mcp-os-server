@@ -2,15 +2,58 @@
 
 import os
 from pathlib import Path
+from typing import List, Optional
+import sys
 
 import pytest
 from mcp.server.fastmcp import Image
 
 from mcp_os_server.filesystem.server import (
     _do_load_image_by_pillow, 
-    create_server, 
-    check_path_allowed_and_resolve_async
+    check_path_allowed_and_resolve_async,
+    define_mcp_server,
 )
+
+
+from mcp_os_server.filesystem.filesystem_service import FilesystemService
+from mcp_os_server.filtered_fast_mcp import FilteredFastMCP
+
+
+
+def create_server(
+    allowed_dirs: List[str],
+    features: Optional[List] = None,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    default_encoding: str = sys.getdefaultencoding(),
+) -> "FilteredFastMCP":
+    """
+    创建并配置MCP文件系统服务器。
+
+    Args:
+        allowed_dirs (List[str]): 允许文件操作的根目录列表。
+        features (Optional[List]): 文件系统服务功能特性列表。
+        host (str): 服务器绑定的主机地址。
+        port (int): 服务器监听的端口。
+
+    Returns:
+        FilteredFastMCP: 配置好的FastMCP服务器实例。
+    """
+    if not allowed_dirs:
+        raise ValueError("至少需要指定一个允许的目录")
+
+    # 从环境变量读取额外的允许目录
+    env_allowed_dirs_str = os.getenv("ALLOWED_DIRS")
+    if env_allowed_dirs_str:
+        env_allowed_dirs = env_allowed_dirs_str.split(os.pathsep)
+        # 将环境变量中的目录添加到允许列表中
+        allowed_dirs.extend(env_allowed_dirs)
+
+    filesystem_service = FilesystemService(features=features)
+    mcp = FilteredFastMCP(name="filesystem", version="0.1.0", host=host, port=port)
+    define_mcp_server(mcp, filesystem_service, allowed_dirs, default_encoding)
+    return mcp
+
 
 
 class TestPathAccessControl:
