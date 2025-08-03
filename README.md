@@ -202,7 +202,7 @@ ALLOWED_COMMANDS="ls,cat,echo" ALLOWED_DIRS="/tmp" uv --project . run mcp-os-ser
 | `DEFAULT_TIMEOUT`           | 命令运行的默认超时时间（秒）                               | `15`             | Command, Unified    | `DEFAULT_TIMEOUT=180`                                                                                                            |
 | `DEFAULT_ENCODING_<command>` | 为特定命令设置默认字符编码（优先级高于 `DEFAULT_ENCODING`）         | （空）            | Command, Unified    | `DEFAULT_ENCODING_npm=utf-8 DEFAULT_ENCODING_dir=gbk`                                                                            |
 | `<COMMAND>_COMMAND_ENV_<VAR>` | 为特定命令设置环境变量（优先级低于用户指定的 envs） | （空） | Command, Unified | `NPM_COMMAND_ENV_NODE_OPTIONS=--max-old-space-size=4096`。如果设置某个环境变量为空，则删除该变量 |
-| `PROJECT_ENV_FOLDER`        | 项目环境变量文件夹路径（用于基于MCP的Roots协议在项目根目录下查找命令特定环境变量文件，文件名必须为 `<command>.env`，文件名不区分大小写），优先级高于 `<COMMAND>_COMMAND_ENV_<VAR>`。可以通过在env文件中设置某个变量为空来删除该变量 | （空）            | Command, Unified    | `PROJECT_ENV_FOLDER=.env`                                                                                                        |
+| `PROJECT_COMMAND_CONFIG_FILE`        | 项目运行命令的配置文件路径（用于基于MCP的Roots协议在项目根目录下查找命令特定配置的yaml文件。该文件可以配置命令的默认编码、默认超时时间、默认环境变量等）优先级高于 `<COMMAND>_COMMAND_ENV_<VAR>` 和 `DEFAULT_ENCODING_<command>` | （空）            | Command, Unified    | `PROJECT_COMMAND_CONFIG_FILE=./.mcp/mcp-command-server/command-config.yaml`                                                                                                        |
 | `OUTPUT_STORAGE_PATH`       | 命令输出日志的存储路径                                     | 临时目录           | Command, Unified    | `OUTPUT_STORAGE_PATH=/var/log/mcp-os-server`                                                                                     |
 | `FILESYSTEM_SERVICE_FEATURES` | 文件系统服务额外功能特性列表（逗号分隔）                      | （空）            | Filesystem, Unified | `FILESYSTEM_SERVICE_FEATURES="support_cursor_directory_format"`                                                                  |
 | `DISABLE_TOOLS`             | 逗号分隔的要禁用的工具列表                                   | （空）            | 所有服务器               | `DISABLE_TOOLS="read_file,command_execute"`                                                                                      |
@@ -247,6 +247,27 @@ command_execute(command="dir")  # 使用 gbk（来自 DEFAULT_ENCODING_dir）
 # 情况3：使用全局默认编码
 command_execute(command="ls")   # 使用 utf-8（来自 DEFAULT_ENCODING）
 ```
+
+### 项目级命令配置文件
+
+MCP OS Server 支持在项目根目录下查找命令特定配置的yaml文件。该文件可以配置命令的默认编码、默认超时时间、默认环境变量等。
+
+文件路径可以通过 `PROJECT_COMMAND_CONFIG_FILE` 环境变量指定。
+
+文件内容示例：
+
+```yaml
+extra_paths: # 额外添加到 PATH 环境变量中的路径。如果是相对路径，则需要使用 MCP Roots 协议解析为绝对路径。
+  - /path/to/extra/path
+commands: # 命令配置
+  mvnd: # 命令名称
+    default_encoding: utf-8 # 默认编码。优先级高于 `DEFAULT_ENCODING_<command>` 和 `DEFAULT_ENCODING`
+    default_timeout: 180 # 默认超时时间。优先级高于 `DEFAULT_TIMEOUT`
+    default_envs: # 默认环境变量，优先级高于 `<COMMAND>_COMMAND_ENV_<VAR>`
+      MAVEN_ARGS: 
+    
+```
+
 
 ### 文件系统服务功能特性配置
 

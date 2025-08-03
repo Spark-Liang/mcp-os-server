@@ -17,6 +17,7 @@ from typing import (
     Protocol,
     runtime_checkable,
 )
+from pathlib import Path
 
 from .models import (
     MessageEntry,
@@ -272,6 +273,7 @@ class IProcessManager(Protocol):
         envs: Optional[Dict[str, str]] = None,
         encoding: str = sys.getdefaultencoding(),
         labels: Optional[List[str]] = None,
+        extra_paths: Optional[List[str | Path]] = None,
     ) -> IProcess:
         """
         Starts a new background process.
@@ -287,6 +289,7 @@ class IProcessManager(Protocol):
             envs (Optional[Dict[str, str]]): Additional environment variables for the command.
             encoding (Optional[str]): Character encoding for the command's output.
             labels (Optional[List[str]]): A list of labels for process classification.
+            extra_paths (Optional[List[str | Path]]): A list of extra paths to be added to the PATH environment variable.
 
         Returns:
             IProcess: An instance of the started process.

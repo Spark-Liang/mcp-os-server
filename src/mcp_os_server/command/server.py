@@ -11,8 +11,9 @@ import anyio
 from mcp.server.session import ServerSession
 from mcp.server.fastmcp import FastMCP, Context
 from mcp.types import TextContent
-from pydantic import Field
+from pydantic import Field, BaseModel
 from dotenv import dotenv_values
+import yaml
 
 from .exceptions import (
     CommandExecutionError,
@@ -22,7 +23,7 @@ from .exceptions import (
 )
 from .interfaces import IProcessManager
 from .models import ProcessStatus
-from mcp_os_server.path_utils import list_roots, try_resolve_win_path_in_url_format
+from mcp_os_server.path_utils import list_roots, try_resolve_win_path_in_url_format, resolve_paths_and_check_allowed, resolve_path_and_check_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,18 @@ async def _apply_grep_filter(log_entries, grep_pattern, grep_mode):
         return log_entries
 
 
+class ResolvedStartProcessParams(BaseModel):
+    """
+    解析后的启动进程参数
+    """
+    command: str = Field(...,description="要执行的命令")
+    args: Optional[List[str]] = Field(None,description="命令的参数列表")
+    directory: str = Field(...,description="工作目录")
+    timeout: int = Field(...,description="命令执行超时时间，单位：秒")
+    envs: Dict[str, str] = Field(...,description="启动进程时设置的环境变量")
+    encoding: str = Field(...,description="命令输出编码")
+    extra_paths: Optional[List[Path]] = Field(None,description="额外添加到 PATH 环境变量中的路径")
+
 def define_mcp_server(
     mcp: FastMCP,
     process_manager: IProcessManager,
@@ -73,7 +86,7 @@ def define_mcp_server(
     default_timeout: int,
     command_env_map: Dict[str, Dict[str, str]] = {},
     default_envs: Dict[str, str] = {},
-    project_env_folder: Optional[str] = None,
+    project_command_config_file: Optional[str] = None,
     # TODO: add other options if needed
 ) -> None:
     """
@@ -87,7 +100,7 @@ def define_mcp_server(
         default_timeout: The default timeout for command execution.
         command_env_map: A map of commands to their default environment variables.
         default_envs: default environment variables for all commands.
-        project_env_folder: The folder path to the project environment variables.
+        project_command_config_file: The path to the project command config file.
     """
 
     logger.info("Allowed commands: %s", allowed_commands)
@@ -96,82 +109,199 @@ def define_mcp_server(
     logger.info("Command default encoding map: %s", command_default_encoding_map)
     logger.info("Command env map: %s", command_env_map)
     logger.info("Default environment variables: %s", default_envs)
-    logger.info("Project environment folder: %s", project_env_folder)
+    logger.info("Project command config file: %s", project_command_config_file)
 
-    def get_effective_encoding(
-        command: str, user_encoding: Optional[str] = None
-    ) -> str:
-        """Get the effective encoding for a command based on priority. 注意使用大小写不敏感的方式查找"""
-        # Priority: user_encoding > command_default_encoding_map > default_encoding
-        if user_encoding:
-            return user_encoding
-        for key, value in command_default_encoding_map.items():
-            if command.upper() == key.upper():
-                return value
-        return default_encoding
+    class CommandConfig(BaseModel):
+        default_encoding: Optional[str] = Field(...,description="默认编码")
+        default_timeout: Optional[int] = Field(...,description="默认超时时间")
+        default_envs: Dict[str, str | None] = Field(...,description="默认环境变量")
 
-    def get_effective_envs(
-        command: str,
-        user_envs: Optional[Dict[str, str | None] | Dict[str, str]] = None,
-        project_envs: Optional[Dict[str, str | None] | Dict[str, str]] = None,
-    ) -> Dict[str, str]:
-        """
-        优先级：
-        1. 用户环境变量
-        2. 项目环境变量
-        3. 命令默认环境变量
-        4. 默认环境变量
+    class ProjectCommandConfig(BaseModel):
+        extra_paths: Optional[List[Path]] = Field(...,description="额外路径")
+        commands: Dict[str, CommandConfig] = Field(...,description="命令配置")
+        
 
-        合并规则：如果优先级高的key存在，则优先级低的key不生效。比如高优先级的 key 为 None ，相当于删除低优先级的key。
-        """
-        logger.debug("command: %s", command)
-        logger.debug("command_env_map: %s", command_env_map)
-        logger.debug("default_envs: %s", default_envs)
-        logger.debug("project_envs: %s", project_envs)
-        logger.debug("user_envs: %s", user_envs)
-
-        envs_from_command_env_map = {}
-        for key, value in command_env_map.items():
-            if key.upper() == command.upper():
-                envs_from_command_env_map = value
-                break
-        logger.debug("envs_from_command_env_map: %s", envs_from_command_env_map)
-        result = { k: v for k, v in {
-            **default_envs, **envs_from_command_env_map, **(project_envs or {}), **(user_envs or {})
-        }.items() if v is not None }
-        logger.debug("effective envs for command %s: %s", command, result)
-        return result
-
-    async def get_project_envs(
+    async def load_project_command_config(
         context: Context,
-        command: str,
-        directory: str,
-        project_env_folder: Optional[str] = None,
-    ) -> Dict[str, str | None]:
-        if not project_env_folder:
-            return {}
-
-        directory_path = try_resolve_win_path_in_url_format(directory).resolve()
-
-        root_info_items = await list_roots(context)
-
-        for root_info_item in root_info_items:
-            root_path = root_info_item.local_path
-            if not root_path:
-                continue
-            if directory_path.is_relative_to(root_path):
-                env_folder = (root_path / project_env_folder ).resolve()
-                logger.debug("env_folder: %s", env_folder)
-                env_files = env_folder.glob("*.env")
-                for env_file in env_files:
-                    env_filename = env_file.name
-                    if env_filename.lower() == command.lower() + ".env":
-                        logger.debug("load env from env_file: %s", env_file)
-                        loaded_envs = dotenv_values(env_file)
-                        logger.debug("loaded_envs: %s", loaded_envs)
-                        return loaded_envs
+        directory: Path,
+    ) -> Optional[ProjectCommandConfig]:
+        """
+        Load project command configuration from YAML file.
+        Returns None if no config file is found or can't be loaded.
+        """
+        if not project_command_config_file:
+            return None
+            
+        try:
+            directory_path = directory
+            root_info_items = await list_roots(context)
+            
+            for root_info_item in root_info_items:
+                root_path = root_info_item.local_path
+                if not root_path:
+                    continue
+                if directory_path.is_relative_to(root_path):
+                    config_file_path = (root_path / project_command_config_file).resolve()
+                    logger.debug("Checking config file: %s", config_file_path)
                     
-        return {}
+                    if config_file_path.exists() and config_file_path.is_file():
+                        logger.debug("Loading config from: %s", config_file_path)
+                        with open(config_file_path, 'r', encoding='utf-8') as f:
+                            config = yaml.safe_load(f)
+                        logger.debug("Loaded config: %s", config)
+
+                        config_model = ProjectCommandConfig(**{
+                            'extra_paths': [],
+                            'commands': {},
+                        })
+                        # 将 config 中的extra_paths 转换为绝对路径
+                        if 'extra_paths' in config:
+                            original_extra_paths = config['extra_paths']
+                            new_extra_paths = []
+                            for path_str in original_extra_paths:
+                                path = Path(path_str)
+                                if path.is_absolute():
+                                    new_extra_paths.append(str(path))
+                                else:
+                                    new_extra_paths.append(str((root_path / path).resolve()))
+                            config_model.extra_paths = new_extra_paths
+
+                        if 'commands' in config:
+                            config_model.commands = {}
+                            for command_name, command_config in config['commands'].items():
+                                config_model.commands[command_name] = CommandConfig(**{
+                                    'default_encoding': command_config.get('default_encoding'),
+                                    'default_timeout': command_config.get('default_timeout'),
+                                    'default_envs': command_config.get('default_envs', {}),
+                                })
+
+                        logger.debug("ProjectCommandConfig: %s", config_model)
+                        return config_model
+                        
+        except Exception as e:
+            logger.warning("Failed to load project command config: %s", e)
+            logger.debug("详细错误信息: ",exc_info=True)
+            
+        return None
+
+    async def resolve_start_process_params(
+        context: Context,
+        command: str, 
+        directory: str,
+        args: Optional[List[str]] = None,
+        envs: Optional[Dict[str, str]] = None,
+        encoding: Optional[str] = None,
+        timeout: Optional[int] = None,
+    ) -> ResolvedStartProcessParams:
+        """
+        解析启动进程参数，并返回解析后的参数。
+        解析规则：
+        - directory: 如果是相对路径，则需要使用 resolve_path_and_check_allowed 解析为绝对路径。
+        - envs: 
+            - 优先级：
+                - 参数直接传入的环境变量
+                - 项目环境变量
+                - 特定命令全局默认环境变量
+                - 默认环境变量
+            - 合并规则：如果优先级高的key存在，则优先级低的key不生效。比如高优先级的 key 为 None ，相当于删除低优先级的key。
+        - encoding:
+            - 优先级：
+                - 参数直接传入的编码
+                - 项目特定命令默认编码
+                - 特定命令全局默认编码
+                - 默认编码
+        - timeout:
+            - 优先级：
+                - 参数直接传入的超时时间
+                - 项目特定命令默认超时时间
+                - 默认超时时间
+        - extra_paths: 从项目命令配置文件中获取。
+                
+        Args:
+            context: The context of the command.
+            command: The command to execute.
+            directory: The working directory for the command.
+            envs: The environment variables for the command.
+            encoding: The encoding for the command output.
+            timeout: The timeout for the command execution.
+        """
+        logger.debug("resolve_start_process_params: %s, %s, %s, %s, %s, %s", context, command, directory, args, envs, encoding, timeout)
+        # Resolve directory (for command execution, we don't restrict allowed dirs)
+        directory_path = await resolve_path_and_check_allowed(
+            directory, context=context
+        );
+        
+        # Load project command config
+        project_config = await load_project_command_config(context, directory_path)
+        logger.debug("Project config: %s", project_config)
+        
+        # Get command-specific config from project
+        command_config = None
+        if project_config and project_config.commands:
+            # Case-insensitive command matching
+            for cmd_name, cmd_config in project_config.commands.items():
+                if cmd_name.lower() == command.lower():
+                    command_config = cmd_config or {}
+                    break
+        logger.debug("Command config: %s", command_config)
+        # Resolve encoding with priority
+        resolved_encoding = encoding
+        if not resolved_encoding and command_config and command_config.default_encoding:
+            resolved_encoding = command_config.default_encoding
+        if not resolved_encoding:
+            # Check command_default_encoding_map
+            for key, value in command_default_encoding_map.items():
+                if command.upper() == key.upper():
+                    resolved_encoding = value
+                    break
+        if not resolved_encoding:
+            resolved_encoding = default_encoding
+        
+        # Resolve timeout with priority  
+        resolved_timeout = timeout
+        if resolved_timeout is None and command_config and command_config.default_timeout:
+            resolved_timeout = command_config.default_timeout
+        if resolved_timeout is None:
+            resolved_timeout = default_timeout
+        
+        # Resolve environment variables with priority
+        # Start with default environment variables
+        resolved_envs = default_envs.copy()
+        
+        # Add command-specific environment variables
+        if command in command_env_map:
+            for key, value in command_env_map[command].items():
+                resolved_envs[key] = value
+        
+        # Add project environment variables
+        project_envs = command_config.default_envs if command_config and command_config.default_envs else {}
+        for key, value in project_envs.items():
+            if value == "":  # Empty string means delete
+                if key in resolved_envs:
+                    del resolved_envs[key]
+            else:
+                resolved_envs[key] = value
+        
+        # Add user-provided environment variables (highest priority)
+        if envs:
+            for key, value in envs.items():
+                if value is None:  # None means delete
+                    if key in resolved_envs:
+                        del resolved_envs[key]
+                else:
+                    resolved_envs[key] = value
+        
+        return ResolvedStartProcessParams(
+            command=command,
+            args=args,
+            directory=str(directory_path),
+            timeout=resolved_timeout,
+            envs=resolved_envs,
+            encoding=resolved_encoding,
+            extra_paths=project_config.extra_paths if project_config and project_config.extra_paths else None,
+        )
+
+
 
     @mcp.tool()
     async def command_execute(
@@ -223,22 +353,20 @@ def define_mcp_server(
         limit_lines_int = max(1, int(limit_lines)) if limit_lines else 500
 
         try:
-            effective_encoding = get_effective_encoding(
-                command, encoding if encoding != default_encoding else None
+            # Resolve all process parameters
+            resolved_params = await resolve_start_process_params(
+                context, command, directory, args, envs, encoding, timeout_int
             )
-            envs = get_effective_envs(
-                command,
-                envs,
-                await get_project_envs(context, command, directory, project_env_folder),
-            )
+            
             process = await process_manager.start_process(
-                command=[command] + (args or []),
-                directory=directory,
+                command=[resolved_params.command] + (resolved_params.args or []),
+                directory=resolved_params.directory,
                 description=f"Synchronous execution: {command}",
                 stdin_data=stdin,
-                timeout=timeout_int,
-                envs=envs,
-                encoding=effective_encoding,
+                timeout=resolved_params.timeout,
+                envs=resolved_params.envs,
+                encoding=resolved_params.encoding,
+                extra_paths=[ p for p in resolved_params.extra_paths ] if resolved_params.extra_paths else None,
             )
 
             logger.info("Waiting for process completion: %s", process.pid)
@@ -298,6 +426,7 @@ def define_mcp_server(
         except CommandExecutionError as e:
             return [TextContent(type="text", text=f"Command execution failed: {e}")]
         except Exception as e:
+            logger.error("Unexpected error during command execution: %s", e, exc_info=True)
             # Catch any unexpected exceptions to prevent MCP protocol stack crashes
             import traceback
 
@@ -355,22 +484,21 @@ def define_mcp_server(
         timeout_int = max(1, int(timeout)) if timeout else 15
 
         try:
-            effective_encoding = get_effective_encoding(
-                command, encoding if encoding != default_encoding else None
+            # Resolve all process parameters
+            resolved_params = await resolve_start_process_params(
+                context, command, directory, args, envs, encoding, timeout_int
             )
-            envs = get_effective_envs(
-                command, envs, 
-                await get_project_envs(context, command, directory, project_env_folder)
-            )
+            
             process = await process_manager.start_process(
-                command=[command] + (args or []),
-                directory=directory,
+                command=[resolved_params.command] + (resolved_params.args or []),
+                directory=resolved_params.directory,
                 description=description,
                 stdin_data=stdin,
-                timeout=timeout_int,
-                envs=envs,
-                encoding=effective_encoding,
+                timeout=resolved_params.timeout,
+                envs=resolved_params.envs,
+                encoding=resolved_params.encoding,
                 labels=labels,
+                extra_paths=[ p for p in resolved_params.extra_paths ] if resolved_params.extra_paths else None,
             )
             return [
                 TextContent(

@@ -8,7 +8,7 @@ from typing import AsyncGenerator, Dict, List, Optional
 import psutil
 import traceback
 import shutil
-
+from pathlib import Path
 import anyio
 from anyio import (
     Event,
@@ -126,7 +126,7 @@ async def kill_process(process: Process):
         process.kill()
 
 
-def get_windows_executable_command(command: str) -> str:
+def get_windows_executable_command(command: str, path: str) -> str:
     """
     Get the correct executable command normalized for Windows.
 
@@ -145,13 +145,13 @@ def get_windows_executable_command(command: str) -> str:
             return command
 
         # Then check if command exists in PATH as-is
-        if command_path := shutil.which(command):
+        if command_path := shutil.which(command, path=path):
             return command_path
 
         # Check for Windows-specific extensions
         for ext in [".cmd", ".bat", ".exe", ".ps1"]:
             ext_version = f"{command}{ext}"
-            if ext_path := shutil.which(ext_version):
+            if ext_path := shutil.which(ext_version, path=path):
                 return ext_path
 
         # For regular commands or if we couldn't find special versions
@@ -162,18 +162,18 @@ def get_windows_executable_command(command: str) -> str:
         return command
 
 
-def _get_executable_command(command: str) -> str:
+def _get_executable_command(command: str, path: str) -> str:
     """
     Get the correct executable command normalized for the current platform.
 
     Args:
         command: Base command (e.g., 'uvx', 'npx')
-
+        path: The path to be added to the PATH environment variable
     Returns:
         str: Platform-appropriate command
     """
     if sys.platform == "win32":
-        return get_windows_executable_command(command)
+        return get_windows_executable_command(command, path)
     else:
         return command
 
@@ -532,14 +532,21 @@ class AnyioProcessManager(IProcessManager):
         envs: Optional[Dict[str, str | None]] = None,
         encoding: str = sys.getdefaultencoding(),
         labels: Optional[List[str]] = None,
+        extra_paths: Optional[List[str | Path]] = None,
     ) -> IProcess:
         if not command:
             raise CommandExecutionError("Command is empty")
 
         env = {k:v for k,v in {**(envs or {})}.items() if v is not None}
+        path_env_var = env.get("PATH", os.environ.get("PATH", ""))
+        if extra_paths:
+            path_env_var = os.pathsep.join([path_env_var, *[str(p) for p in extra_paths]])
+        env["PATH"] = path_env_var
         try:
             logger.debug("original command: %s", command)
-            executable_command = _get_executable_command(command[0])
+            executable_command = _get_executable_command(
+                command[0], path=path_env_var
+            )
             command = [executable_command] + command[1:]
             logger.debug("normalized command: %s", command)
 

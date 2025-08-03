@@ -1,0 +1,10 @@
+commands:
+  uv:
+    default_envs:
+      UV_TEST_VAR: from_uv_env_file
+      UV_PRIORITY_TEST: project_env_priority
+      UV_DELETE_TEST:
+      UV_SPECIAL_CHARS: test_value_with_spaces and symbols!@#
+      UV_PROJECT_TEST: from_project_env
+      UV_DELETE_VAR:
+      UV_CASE_TEST: case_insensitive_works

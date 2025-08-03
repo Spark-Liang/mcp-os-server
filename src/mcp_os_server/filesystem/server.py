@@ -15,7 +15,7 @@ from mcp.types import TextContent
 from PIL import Image as PILImage
 from pydantic import Field
 
-from ..path_utils import list_roots, RootInfoItem, try_resolve_win_path_in_url_format
+from ..path_utils import list_roots, RootInfoItem, try_resolve_win_path_in_url_format, resolve_path_and_check_allowed
 from .filesystem_service import FilesystemService
 from .models import DirectoryItem, FileEditResult, FileInfo, TextFileReadResult
 
@@ -42,68 +42,7 @@ async def check_path_allowed_and_resolve_async(
     Raises:
         PermissionError: 如果路径不被允许访问
     """
-    from ..path_utils import list_roots
-    
-    # 使用 path_utils 处理 Cursor 格式路径
-    request_path = try_resolve_win_path_in_url_format(path)
-    is_request_absolute = request_path.is_absolute()
-    
-    async def get_cached_root_infos() -> List[RootInfoItem]:
-        cached_root_infos = []
-        is_requested = False
-        lock = anyio.Lock()
-        if not is_requested:
-            async with lock:
-                if not is_requested:
-                    if context:
-                        cached_root_infos = await list_roots(context)
-                    else:
-                        logger.warning("no context, skip list_roots")
-                    is_requested = True
-        return cached_root_infos
-
-    
-    for allowed in [Path(d) for d in allowed_dirs]:
-        if is_request_absolute != allowed.is_absolute():
-            logger.debug(
-                "allowed_path: %s, is_request_absolute: %s, is_allowed_absolute: %s, skip", 
-                allowed, is_request_absolute, allowed.is_absolute()
-            )
-            continue
-        
-        if is_request_absolute:
-            if request_path.is_relative_to(allowed):
-                return request_path
-            else:
-                logger.debug(
-                    "request_path %s is relative to allowed_path %s, return: %s", 
-                    request_path, allowed, request_path
-                )
-                continue
-        else:
-            if not (request_path.is_relative_to(allowed)):
-                logger.debug(
-                    "request_path %s is not relative to allowed_path %s, skip", 
-                    request_path, allowed
-                )
-                continue
-            
-            root_infos = await get_cached_root_infos()
-            for root_info in root_infos:
-                if not(root_info.local_path and root_info.local_path.is_absolute()):
-                    logger.debug(
-                        "root %s local_path is not absolute, skip: %s", root_info.root.name, root_info.local_path
-                    )
-                    continue
-                
-                resolved_request_path = root_info.local_path / request_path
-                if resolved_request_path.exists():
-                    return resolved_request_path
-                logger.debug(
-                    "resolved_request_path %s not exists, skip: %s", resolved_request_path, request_path
-                )
-            
-    raise PermissionError(f"路径不在允许的目录中: {path}，allowed_dirs: {allowed_dirs}")
+    return await resolve_path_and_check_allowed(path, allowed_dirs, context)
     
 
 def _do_load_image_by_pillow(path: str, max_bytes: Optional[int] = None) -> Image:

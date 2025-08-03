@@ -1436,11 +1436,11 @@ class BaseCommandServerIntegrationTest(ABC):
         assert validate_command_success_format(list(result_delete), 'UV_TEST_VAR=NOT_SET')
 
     @pytest.mark.anyio 
-    async def test_project_env_folder_comprehensive(
+    async def test_project_command_config_comprehensive(
         self, mcp_client_session: ClientSession, tmp_path
     ):
-        """Test comprehensive PROJECT_ENV_FOLDER functionality with MCP Roots protocol."""
-        print('Running test_project_env_folder_comprehensive...', file=sys.stderr)
+        """Test comprehensive PROJECT_COMMAND_CONFIG_FILE functionality with MCP Roots protocol."""
+        print('Running test_project_command_config_comprehensive...', file=sys.stderr)
         
         # Test 1: Basic project environment loading from predefined uv.env
         result = await self.call_tool(
@@ -1572,7 +1572,7 @@ class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
         if process_retention_seconds is not None:
             env["PROCESS_RETENTION_SECONDS"] = str(process_retention_seconds)
         env["PYTHONIOENCODING"] = "utf-8"
-        env["PROJECT_ENV_FOLDER"] = "tests/resources/env_folder"
+        env["PROJECT_COMMAND_CONFIG_FILE"] = "tests/resources/command-config-test.yaml"
         
         # Add command-specific environment variables for testing
         env["UV_COMMAND_ENV_UV_TEST_VAR"] = "from_command_env"

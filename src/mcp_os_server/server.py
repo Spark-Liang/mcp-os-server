@@ -112,7 +112,7 @@ class EnvVarsParseResult(BaseModel):
     """
     command_default_encoding_map: Dict[str, str] = Field(description="命令默认编码映射")
     command_env_map: Dict[str, Dict[str, str]] = Field(description="命令环境变量映射")
-    project_env_folder: Optional[str] = Field(description="项目环境变量文件夹路径")
+    project_command_config_file: Optional[str] = Field(description="项目命令配置文件路径")
     clean_envs: Dict[str, str] = Field(description="清理后的环境变量")
 
 def parse_env_vars() -> EnvVarsParseResult:
@@ -136,8 +136,8 @@ def parse_env_vars() -> EnvVarsParseResult:
                 command_name = match.group(1).lower()
                 var_name = match.group(2)
                 command_env_map[command_name][var_name] = env_value
-        elif env_key == "PROJECT_ENV_FOLDER":
-            project_env_folder = env_value
+        elif env_key == "PROJECT_COMMAND_CONFIG_FILE":
+            project_command_config_file = env_value
         else:
             clean_envs[env_key] = env_value
 
@@ -147,7 +147,7 @@ def parse_env_vars() -> EnvVarsParseResult:
     return EnvVarsParseResult(
         command_default_encoding_map=command_encoding_map, 
         command_env_map=command_env_map, 
-        project_env_folder=project_env_folder,
+        project_command_config_file=project_command_config_file,
         clean_envs=clean_envs
     )
 
@@ -428,7 +428,7 @@ async def _run_unified_server(
             default_timeout=default_timeout,
             command_env_map=env_vars_parse_result.command_env_map,
             default_envs=env_vars_parse_result.clean_envs,
-            project_env_folder=env_vars_parse_result.project_env_folder,
+            project_command_config_file=env_vars_parse_result.project_command_config_file,
         )
 
     # Define filesystem server tools if allowed
@@ -719,7 +719,7 @@ async def _run_command_server(
         command_default_encoding_map=env_vars_parse_result.command_default_encoding_map,
         command_env_map=env_vars_parse_result.command_env_map,
         default_envs=env_vars_parse_result.clean_envs,
-        project_env_folder=env_vars_parse_result.project_env_folder,
+        project_command_config_file=env_vars_parse_result.project_command_config_file,
     )
 
     # Add command_open_web_manager tool if web manager is enabled
