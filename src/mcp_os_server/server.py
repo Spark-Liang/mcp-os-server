@@ -6,35 +6,31 @@ which includes a command server implementation, filesystem server implementation
 and web management interface.
 """
 
-import anyio
 import logging
 import os
 import platform
+import re
 import socket
 import sys
 import tempfile
 import webbrowser
-from pathlib import Path
+from collections import defaultdict
 from typing import Dict, List, Optional
-import tempfile
-import atexit
 
+import anyio
 import click
 from mcp.types import TextContent
 from pydantic import BaseModel, Field
-
-from .filtered_fast_mcp import FilteredFastMCP
 
 from .command.interfaces import IProcessManager
 from .command.output_manager import OutputManager
 from .command.process_manager_anyio import AnyioProcessManager
 from .command.web_manager import WebManager
 from .filesystem.filesystem_service import FilesystemService
-
-import re
-from collections import defaultdict
+from .filtered_fast_mcp import FilteredFastMCP
 
 logger = logging.getLogger(__name__)
+
 
 def setup_logger(mode: str, debug: bool = False) -> logging.Logger:
     """Setup logger based on server mode and debug flag."""
@@ -66,7 +62,7 @@ def setup_logger(mode: str, debug: bool = False) -> logging.Logger:
     # 通过 LOG_FILE_PATH 配置文件路径
     log_file_path = os.getenv("LOG_FILE_PATH")
     if log_file_path:
-        file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
+        file_handler = logging.FileHandler(log_file_path, mode="w", encoding="utf-8")
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
 
@@ -93,7 +89,7 @@ def parse_allowed_commands(allowed_commands_str: str) -> List[str]:
 def parse_allowed_directories(allowed_dirs_str: str) -> List[str]:
     """
     Parse the ALLOWED_DIRS environment variable.
-    
+
     Example:
         ALLOWED_DIRS="C:\\Users\\23515\\AppData\\Local\\Temp,.\\"
     """
@@ -110,10 +106,14 @@ class EnvVarsParseResult(BaseModel):
     """
     环境变量解析结果
     """
+
     command_default_encoding_map: Dict[str, str] = Field(description="命令默认编码映射")
     command_env_map: Dict[str, Dict[str, str]] = Field(description="命令环境变量映射")
-    project_command_config_file: Optional[str] = Field(description="项目命令配置文件路径")
+    project_command_config_file: Optional[str] = Field(
+        description="项目命令配置文件路径"
+    )
     clean_envs: Dict[str, str] = Field(description="清理后的环境变量")
+
 
 def parse_env_vars() -> EnvVarsParseResult:
     """
@@ -123,7 +123,7 @@ def parse_env_vars() -> EnvVarsParseResult:
     command_env_map = defaultdict(dict)
     clean_envs = {}
     command_encoding_prefix = "DEFAULT_ENCODING_"
-    command_env_pattern = re.compile(r'^(.+?)_COMMAND_ENV_(.+?)$')
+    command_env_pattern = re.compile(r"^(.+?)_COMMAND_ENV_(.+?)$")
     project_command_config_file = None
 
     for env_key, env_value in os.environ.items():
@@ -146,10 +146,10 @@ def parse_env_vars() -> EnvVarsParseResult:
     logger.info(f"command_env_map: {dict(command_env_map)}")
     logger.info(f"clean_envs: {clean_envs}")
     return EnvVarsParseResult(
-        command_default_encoding_map=command_encoding_map, 
-        command_env_map=command_env_map, 
+        command_default_encoding_map=command_encoding_map,
+        command_env_map=command_env_map,
         project_command_config_file=project_command_config_file,
-        clean_envs=clean_envs
+        clean_envs=clean_envs,
     )
 
 
@@ -207,7 +207,7 @@ async def create_process_manager(
 
     # Create ProcessManager based on the PROCESS_MANAGER_TYPE environment variable
     process_manager_type = os.environ.get("PROCESS_MANAGER_TYPE", "anyio")
-    
+
     logger = logging.getLogger(__name__)
     logger.info(f"Creating process manager of type: {process_manager_type}")
 
@@ -275,16 +275,15 @@ async def _run_filesystem_server(
             raise ValueError("至少需要指定一个允许的目录")
 
         filesystem_service = FilesystemService(features=filesystem_service_features)
-        mcp = FilteredFastMCP(
-            name="filesystem", version="0.1.0", host=host, port=port
-        )
+        mcp = FilteredFastMCP(name="filesystem", version="0.1.0", host=host, port=port)
 
         from .filesystem.server import define_mcp_server
+
         define_mcp_server(
-            mcp=mcp, 
-            filesystem_service=filesystem_service, 
-            allowed_dirs=allowed_dirs, 
-            default_encoding=default_encoding
+            mcp=mcp,
+            filesystem_service=filesystem_service,
+            allowed_dirs=allowed_dirs,
+            default_encoding=default_encoding,
         )
     except Exception as e:
         logger.error("Failed to initialize filesystem server: %s", e, exc_info=True)
@@ -372,7 +371,10 @@ async def _run_unified_server(
         logger.info("Process retention: %s seconds", process_retention_seconds)
         logger.info("Default encoding: %s", default_encoding)
         if env_vars_parse_result.command_default_encoding_map:
-            logger.info("Command-specific encodings: %s", env_vars_parse_result.command_default_encoding_map)
+            logger.info(
+                "Command-specific encodings: %s",
+                env_vars_parse_result.command_default_encoding_map,
+            )
     if allowed_dirs:
         logger.info("Allowed directories: %s", ", ".join(allowed_dirs))
     if filesystem_service_features:
@@ -434,9 +436,9 @@ async def _run_unified_server(
 
     # Define filesystem server tools if allowed
     if allowed_dirs:
-        from .filesystem.server import define_mcp_server
         from .filesystem.filesystem_service import FilesystemService
-        
+        from .filesystem.server import define_mcp_server
+
         define_mcp_server(
             mcp=mcp,
             filesystem_service=FilesystemService(features=filesystem_service_features),
@@ -673,7 +675,10 @@ async def _run_command_server(
     logger.info("Process retention: %s seconds", process_retention_seconds)
     logger.info("Default encoding: %s", default_encoding)
     if env_vars_parse_result.command_default_encoding_map:
-        logger.info("Command-specific encodings: %s", env_vars_parse_result.command_default_encoding_map)
+        logger.info(
+            "Command-specific encodings: %s",
+            env_vars_parse_result.command_default_encoding_map,
+        )
 
     # Create CommandExecutor
     try:
@@ -864,6 +869,7 @@ def filesystem_server(
         logger.info("Server exited")
     except BaseException as e:
         logger.error("Server exited with error: %s", e, exc_info=True)
+
 
 @main.command("unified-server")
 @click.option(

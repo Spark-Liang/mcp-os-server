@@ -6,6 +6,7 @@ It implements the IWebManager interface and provides both web UI and REST API en
 """
 
 import logging
+import os
 import sys
 import threading
 import traceback
@@ -18,7 +19,6 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-import os
 
 from .exceptions import ProcessNotFoundError, WebInterfaceError
 from .interfaces import IProcessManager
@@ -130,7 +130,9 @@ class WebManager:
             raise WebInterfaceError("WebManager not initialized with command executor")
 
         try:
-            self._logger.debug(f"Try to start web interface on {host}:{port} with debug: {debug}")
+            self._logger.debug(
+                f"Try to start web interface on {host}:{port} with debug: {debug}"
+            )
             if url_prefix:
                 # For URL prefix support, we could use a sub-application
                 # For now, we'll note this as a potential enhancement
@@ -156,7 +158,9 @@ class WebManager:
     def _run_uvicorn_server(self, host: str, port: int, debug: bool) -> None:
         """Run Uvicorn server with anyio backend."""
         try:
-            self._logger.debug(f"Try to run uvicorn server on {host}:{port} with debug: {debug}")
+            self._logger.debug(
+                f"Try to run uvicorn server on {host}:{port} with debug: {debug}"
+            )
             config = uvicorn.Config(
                 app=self._app,
                 host=host,
@@ -767,11 +771,11 @@ class WebManager:
         return "\n".join(lines)
 
     def _get_log_content(self) -> str:
-        log_path = os.getenv('MCP_LOG_FILE')
+        log_path = os.getenv("MCP_LOG_FILE")
         if not log_path:
             return "Log file path not set"
         try:
-            with open(log_path, 'r', encoding='utf-8') as f:
+            with open(log_path, "r", encoding="utf-8") as f:
                 return f.read()
         except Exception as e:
             return f"Error reading log: {str(e)}"

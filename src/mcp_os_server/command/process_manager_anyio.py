@@ -1,22 +1,22 @@
 import logging
 import os
+import shutil
 import subprocess
 import sys
+import traceback
 import uuid
 from datetime import datetime
-from typing import AsyncGenerator, Dict, List, Optional
-import psutil
-import traceback
-import shutil
 from pathlib import Path
+from typing import AsyncGenerator, Dict, List, Optional
+
 import anyio
+import psutil
 from anyio import (
     Event,
     Lock,
     create_task_group,
     move_on_after,
     open_process,
-    sleep,
 )
 from anyio.abc import Process, TaskGroup
 
@@ -55,7 +55,7 @@ async def terminate_windows_process(process: Process):
     except psutil.NoSuchProcess:
         logger.debug("process %s not found", process.pid)
         return
-    
+
     try:
         logger.debug("try to terminate process tree from %s", process.pid)
         for child in parent.children(recursive=True):
@@ -69,7 +69,10 @@ async def terminate_windows_process(process: Process):
             await process.wait()
             return
     except Exception as e:
-        logger.debug("Failed to terminate process %s: %s", process.pid, str(e), exc_info=True)
+        logger.debug(
+            "Failed to terminate process %s: %s", process.pid, str(e), exc_info=True
+        )
+
 
 async def terminate_process(process: Process):
     """
@@ -96,7 +99,7 @@ async def kill_windows_process(process: Process):
     except psutil.NoSuchProcess:
         logger.debug("process %s not found", process.pid)
         return
-    
+
     try:
         logger.debug("try to kill process tree from %s", process.pid)
         for child in parent.children(recursive=True):
@@ -110,7 +113,10 @@ async def kill_windows_process(process: Process):
             await process.wait()
             return
     except Exception as e:
-        logger.debug("Failed to kill process %s: %s", process.pid, str(e), exc_info=True)
+        logger.debug(
+            "Failed to kill process %s: %s", process.pid, str(e), exc_info=True
+        )
+
 
 async def kill_process(process: Process):
     """
@@ -234,7 +240,9 @@ class AnyioProcess(IProcess):
                 tg.start_soon(self._check_process_running)
         except Exception as e:
             logger.debug("Exception in _run_monitoring: %s", str(e))
-            await self._set_final_status(ProcessStatus.ERROR, None, f"Monitoring failed: {str(e)}")
+            await self._set_final_status(
+                ProcessStatus.ERROR, None, f"Monitoring failed: {str(e)}"
+            )
 
     async def _read_stream(self, stream, output_key: str):
         try:
@@ -267,7 +275,10 @@ class AnyioProcess(IProcess):
                     break
         except Exception as e:
             logger.debug(
-                "Outer exception in _read_stream for %s: %s", output_key, str(e), exc_info=True
+                "Outer exception in _read_stream for %s: %s",
+                output_key,
+                str(e),
+                exc_info=True,
             )
             # 静默处理任何其他异常，避免监控任务崩溃
             pass
@@ -284,7 +295,9 @@ class AnyioProcess(IProcess):
             except anyio.EndOfStream:
                 break
             except Exception as e:
-                logger.debug("Exception in _check_process_running: %s", str(e), exc_info=True)
+                logger.debug(
+                    "Exception in _check_process_running: %s", str(e), exc_info=True
+                )
                 break
 
     async def _wait_with_timeout(self):
@@ -314,7 +327,9 @@ class AnyioProcess(IProcess):
             # Wait for process to exit
             with move_on_after(5.0):
                 exit_code = await self._process.wait()
-                await self._set_final_status(ProcessStatus.TERMINATED, exit_code, error_msg)
+                await self._set_final_status(
+                    ProcessStatus.TERMINATED, exit_code, error_msg
+                )
                 return
             # If still not exited
             await self._set_final_status(
@@ -337,12 +352,14 @@ class AnyioProcess(IProcess):
             # 如果状态不是最终状态，则不设置
             logger.warning("内部错误: 状态不是最终状态: %s", status)
             return
+
         def action():
             self._status = status
             self._exit_code = exit_code
             self._error_message = error_message
             self._end_time = datetime.now()
             self._completion_event.set()
+
         if not already_acquired_lock:
             async with self._lock:
                 action()
@@ -406,7 +423,12 @@ class AnyioProcess(IProcess):
             yield entry
 
     async def stop(self, force: bool = False, reason: Optional[str] = None) -> None:
-        logger.debug("try to stop process %s with force: %s, reason: %s", self._pid, force, reason)
+        logger.debug(
+            "try to stop process %s with force: %s, reason: %s",
+            self._pid,
+            force,
+            reason,
+        )
         if self._status != ProcessStatus.RUNNING:
             logger.warning("Process %s is not running, skip stop", self._pid)
             return
@@ -422,15 +444,22 @@ class AnyioProcess(IProcess):
                         with anyio.fail_after(2.0):
                             await self._process.wait()
                     except Exception as e:
-                        logger.warning("Failed to wait for process to terminate: %s", str(e), exc_info=True)
+                        logger.warning(
+                            "Failed to wait for process to terminate: %s",
+                            str(e),
+                            exc_info=True,
+                        )
                         await kill_process(self._process)
-                
+
             except Exception as e:
                 logger.debug("Exception in stop: %s", str(e))
                 raise ProcessControlError(f"Failed to stop process: {str(e)}")
             finally:
                 await self._set_final_status(
-                    ProcessStatus.TERMINATED, None, reason or "Stopped by user", already_acquired_lock=True
+                    ProcessStatus.TERMINATED,
+                    None,
+                    reason or "Stopped by user",
+                    already_acquired_lock=True,
                 )
 
     async def clean(self) -> Optional[str]:
@@ -540,20 +569,22 @@ class AnyioProcessManager(IProcessManager):
         if not command:
             raise CommandExecutionError("Command is empty")
 
-        env = {k:v for k,v in {**(envs or {})}.items() if v is not None}
+        env = {k: v for k, v in {**(envs or {})}.items() if v is not None}
         path_env_var = env.get("PATH", os.environ.get("PATH", ""))
         if extra_paths:
-            path_env_var = os.pathsep.join([path_env_var, *[str(p) for p in extra_paths]])
+            path_env_var = os.pathsep.join(
+                [path_env_var, *[str(p) for p in extra_paths]]
+            )
         env["PATH"] = path_env_var
         try:
             logger.debug("original command: %s", command)
-            executable_command = _get_executable_command(
-                command[0], path=path_env_var
-            )
+            executable_command = _get_executable_command(command[0], path=path_env_var)
             command = [executable_command] + command[1:]
             logger.debug("normalized command: %s", command)
 
-            logger.debug(f"Starting process:\ncommand: {command}\ndirectory: {directory}\nencoding: {encoding}\nenv: {env}")
+            logger.debug(
+                f"Starting process:\ncommand: {command}\ndirectory: {directory}\nencoding: {encoding}\nenv: {env}"
+            )
             if sys.platform == "win32":
                 creation_flags = subprocess.CREATE_NO_WINDOW
                 try:
@@ -567,7 +598,9 @@ class AnyioProcessManager(IProcessManager):
                         creationflags=creation_flags,
                     )
                 except Exception as e:
-                    logger.warning("Failed to open process with creation flags: %s", str(e))
+                    logger.warning(
+                        "Failed to open process with creation flags: %s", str(e)
+                    )
                     process = await open_process(
                         command,
                         cwd=directory,
@@ -606,7 +639,7 @@ class AnyioProcessManager(IProcessManager):
                         await kill_process(process)
                     except Exception as e:
                         logger.warning("Failed to kill process: %s", str(e))
-                    
+
                 raise CommandExecutionError(
                     "Failed to generate unique PID after 10 attempts"
                 )
@@ -651,9 +684,14 @@ class AnyioProcessManager(IProcessManager):
                             f"Failed to write stdin_data to subprocess: {str(e)}"
                         ) from e
             except CommandExecutionError:
-                logger.error("Failed to write stdin_data to subprocess, force stop process", exc_info=True)
+                logger.error(
+                    "Failed to write stdin_data to subprocess, force stop process",
+                    exc_info=True,
+                )
                 # 如果stdin处理失败，关闭进程并抛出异常
-                await anyio_process.stop(force=True, reason="Failed to write stdin_data to subprocess")
+                await anyio_process.stop(
+                    force=True, reason="Failed to write stdin_data to subprocess"
+                )
                 raise
 
         return anyio_process

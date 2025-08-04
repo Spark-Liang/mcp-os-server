@@ -1,21 +1,22 @@
+import functools
+import json
 import logging
 import re
-from datetime import datetime
-from typing import Dict, List, Optional, Sequence
-import urllib.parse
-from pathlib import Path
-import os
-import sys
-import json
-import anyio
-from mcp.server.session import ServerSession
-from mcp.server.fastmcp import FastMCP, Context
-from mcp.types import TextContent
-from pydantic import Field, BaseModel
-from dotenv import dotenv_values
-import yaml
 from dataclasses import dataclass, field
-import functools
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence
+
+import anyio
+import yaml
+from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import TextContent
+from pydantic import Field
+
+from mcp_os_server.path_utils import (
+    list_roots,
+    resolve_path_and_check_allowed,
+)
 
 from .exceptions import (
     CommandExecutionError,
@@ -25,7 +26,6 @@ from .exceptions import (
 )
 from .interfaces import IProcessManager
 from .models import ProcessStatus
-from mcp_os_server.path_utils import list_roots, try_resolve_win_path_in_url_format, resolve_paths_and_check_allowed, resolve_path_and_check_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,6 @@ async def _apply_grep_filter(log_entries, grep_pattern, grep_mode):
     except re.error:
         # If regex is invalid, return original entries
         return log_entries
-
 
 
 def define_mcp_server(
@@ -128,7 +127,6 @@ def define_mcp_server(
         extra_paths: Optional[List[Path]] = field(default_factory=list)
         commands: Dict[str, CommandConfig] = field(default_factory=dict)
 
-
     @dataclass
     class ResolvedStartProcessParams:
         """解析后的启动进程参数
@@ -161,62 +159,78 @@ def define_mcp_server(
         """
         if not project_command_config_file:
             return None
-            
+
         try:
             directory_path = directory
             root_info_items = await list_roots(context)
-            
+
             for root_info_item in root_info_items:
                 root_path = root_info_item.local_path
                 if not root_path:
                     continue
                 if directory_path.is_relative_to(root_path):
-                    config_file_path = (root_path / project_command_config_file).resolve()
+                    config_file_path = (
+                        root_path / project_command_config_file
+                    ).resolve()
                     logger.debug("Checking config file: %s", config_file_path)
-                    
+
                     if config_file_path.exists() and config_file_path.is_file():
                         logger.debug("Loading config from: %s", config_file_path)
-                        with open(config_file_path, 'r', encoding='utf-8') as f:
+                        with open(config_file_path, "r", encoding="utf-8") as f:
                             config = yaml.safe_load(f)
                         logger.debug("Loaded config: %s", config)
 
-                        config_model = ProjectCommandConfig(**{
-                            'extra_paths': [],
-                            'commands': {},
-                        })
+                        config_model = ProjectCommandConfig(
+                            **{
+                                "extra_paths": [],
+                                "commands": {},
+                            }
+                        )
                         # 将 config 中的extra_paths 转换为绝对路径
-                        if 'extra_paths' in config:
-                            original_extra_paths = config['extra_paths']
+                        if "extra_paths" in config:
+                            original_extra_paths = config["extra_paths"]
                             new_extra_paths = []
                             for path_str in original_extra_paths:
                                 path = Path(path_str)
                                 if path.is_absolute():
                                     new_extra_paths.append(str(path))
                                 else:
-                                    new_extra_paths.append(str((root_path / path).resolve()))
+                                    new_extra_paths.append(
+                                        str((root_path / path).resolve())
+                                    )
                             config_model.extra_paths = new_extra_paths
 
-                        if 'commands' in config:
+                        if "commands" in config:
                             config_model.commands = {}
-                            for command_name, command_config in config['commands'].items():
-                                config_model.commands[command_name] = CommandConfig(**{
-                                    'default_encoding': command_config.get('default_encoding'),
-                                    'default_timeout': command_config.get('default_timeout'),
-                                    'default_envs': command_config.get('default_envs', {}),
-                                })
+                            for command_name, command_config in config[
+                                "commands"
+                            ].items():
+                                config_model.commands[command_name] = CommandConfig(
+                                    **{
+                                        "default_encoding": command_config.get(
+                                            "default_encoding"
+                                        ),
+                                        "default_timeout": command_config.get(
+                                            "default_timeout"
+                                        ),
+                                        "default_envs": command_config.get(
+                                            "default_envs", {}
+                                        ),
+                                    }
+                                )
 
                         logger.debug("ProjectCommandConfig: %s", config_model)
                         return config_model
-                        
+
         except Exception as e:
             logger.warning("Failed to load project command config: %s", e)
-            logger.debug("详细错误信息: ",exc_info=True)
-            
+            logger.debug("详细错误信息: ", exc_info=True)
+
         return None
 
     async def resolve_start_process_params(
         context: Context,
-        command: str, 
+        command: str,
         directory: str,
         args: Optional[List[str]] = None,
         envs: Optional[Dict[str, str | None]] = None,
@@ -227,7 +241,7 @@ def define_mcp_server(
         解析启动进程参数，并返回解析后的参数。
         解析规则：
         - directory: 如果是相对路径，则需要使用 resolve_path_and_check_allowed 解析为绝对路径。
-        - envs: 
+        - envs:
             - 优先级：
                 - 参数直接传入的环境变量
                 - 项目环境变量
@@ -246,7 +260,7 @@ def define_mcp_server(
                 - 项目特定命令默认超时时间
                 - 默认超时时间
         - extra_paths: 从项目命令配置文件中获取。
-                
+
         Args:
             context: The context of the command.
             command: The command to execute.
@@ -255,16 +269,25 @@ def define_mcp_server(
             encoding: The encoding for the command output.
             timeout: The timeout for the command execution.
         """
-        logger.debug("resolve_start_process_params: %s, %s, %s, %s, %s, %s", context, command, directory, args, envs, encoding, timeout)
+        logger.debug(
+            "resolve_start_process_params: %s, %s, %s, %s, %s, %s",
+            context,
+            command,
+            directory,
+            args,
+            envs,
+            encoding,
+            timeout,
+        )
         # Resolve directory (for command execution, we don't restrict allowed dirs)
         directory_path = await resolve_path_and_check_allowed(
             directory, context=context
-        );
-        
+        )
+
         # Load project command config
         project_config = await load_project_command_config(context, directory_path)
         logger.debug("Project config: %s", project_config)
-        
+
         # Get command-specific config from project
         command_config = None
         if project_config and project_config.commands:
@@ -286,32 +309,40 @@ def define_mcp_server(
                     break
         if not resolved_encoding:
             resolved_encoding = default_encoding
-        
-        # Resolve timeout with priority  
+
+        # Resolve timeout with priority
         resolved_timeout = timeout
-        if resolved_timeout is None and command_config and command_config.default_timeout:
+        if (
+            resolved_timeout is None
+            and command_config
+            and command_config.default_timeout
+        ):
             resolved_timeout = command_config.default_timeout
         if resolved_timeout is None:
             resolved_timeout = default_timeout
-        
+
         # Resolve environment variables with priority
         # Start with default environment variables
-        resolved_envs: Dict[str, str | None] = {k:v for k,v in default_envs.items()}
-        
+        resolved_envs: Dict[str, str | None] = {k: v for k, v in default_envs.items()}
+
         # Add command-specific environment variables
         if command in command_env_map:
             for key, value in command_env_map[command].items():
                 resolved_envs[key] = value
-        
+
         # Add project environment variables
-        project_envs = command_config.default_envs if command_config and command_config.default_envs else {}
+        project_envs = (
+            command_config.default_envs
+            if command_config and command_config.default_envs
+            else {}
+        )
         for key, value in project_envs.items():
             if value == "":  # Empty string means delete
                 if key in resolved_envs:
                     del resolved_envs[key]
             else:
                 resolved_envs[key] = value
-        
+
         # Add user-provided environment variables (highest priority)
         if envs:
             for key, value in envs.items():
@@ -320,15 +351,23 @@ def define_mcp_server(
                         del resolved_envs[key]
                 else:
                     resolved_envs[key] = value
-        
+
         return ResolvedStartProcessParams(
             command=command,
             args=args,
             directory=str(directory_path),
             timeout=resolved_timeout,
-            envs={k: v for k, v in resolved_envs.items() if v is not None} if resolved_envs else {},
+            envs=(
+                {k: v for k, v in resolved_envs.items() if v is not None}
+                if resolved_envs
+                else {}
+            ),
             encoding=resolved_encoding,
-            extra_paths=project_config.extra_paths if project_config and project_config.extra_paths else None,
+            extra_paths=(
+                project_config.extra_paths
+                if project_config and project_config.extra_paths
+                else None
+            ),
         )
 
     def is_json_string_list(s):
@@ -356,34 +395,44 @@ def define_mcp_server(
             if is_json_string_list(args):
                 return json.loads(args)
             else:
-                raise ValueError(f"Invalid args string!!! must be a valid JSON list with all string elements: {args}")
+                raise ValueError(
+                    f"Invalid args string!!! must be a valid JSON list with all string elements: {args}"
+                )
         elif isinstance(args, list):
             return args
         else:
             if args is None:
                 return None
             else:
-                raise ValueError(f"Invalid args type!!! must be a list[str] or str: {args}")
-        
+                raise ValueError(
+                    f"Invalid args type!!! must be a list[str] or str: {args}"
+                )
+
     def auto_handle_exception(func):
         """
         自动处理异常，将异常转换为 TextContent 对象
-        
+
         Args:
             func: 要自动处理异常的函数
-            
+
         Returns:
             TextContent 对象
         """
+
         @functools.wraps(func)
         async def wrapper(*args, **kwargs):
             try:
                 return await func(*args, **kwargs)
             except Exception as e:
-                logger.error("Error executing tool %s: %s", func.__name__, e, exc_info=True)
-                return TextContent(text=f"Error executing tool {func.__name__}: {str(e)}", type="text")
+                logger.error(
+                    "Error executing tool %s: %s", func.__name__, e, exc_info=True
+                )
+                return TextContent(
+                    text=f"Error executing tool {func.__name__}: {str(e)}", type="text"
+                )
+
         return wrapper
-    
+
     @mcp.tool()
     @auto_handle_exception
     async def command_execute(
@@ -393,7 +442,8 @@ def define_mcp_server(
             + ", ".join(allowed_commands)
         ),
         args: Optional[List[str] | str] = Field(
-            None, description="The argument list for the command. **type: list[str] | None**"
+            None,
+            description="The argument list for the command. **type: list[str] | None**",
         ),
         directory: str = Field(
             description="The working directory (absolute path) for the command."
@@ -405,7 +455,8 @@ def define_mcp_server(
             default_timeout, description="Maximum execution time in seconds."
         ),
         envs: Optional[Dict[str, str | None]] = Field(
-            None, description="Additional environment variables for the command. None means delete the environment variable."
+            None,
+            description="Additional environment variables for the command. None means delete the environment variable.",
         ),
         encoding: str = Field(
             default_encoding,
@@ -441,7 +492,7 @@ def define_mcp_server(
             resolved_params = await resolve_start_process_params(
                 context, command, directory, args_list, envs, encoding, timeout_int
             )
-            
+
             process = await process_manager.start_process(
                 command=[resolved_params.command] + (resolved_params.args or []),
                 directory=resolved_params.directory,
@@ -450,7 +501,11 @@ def define_mcp_server(
                 timeout=resolved_params.timeout,
                 envs=resolved_params.envs,
                 encoding=resolved_params.encoding,
-                extra_paths=[ p for p in resolved_params.extra_paths ] if resolved_params.extra_paths else None,
+                extra_paths=(
+                    [p for p in resolved_params.extra_paths]
+                    if resolved_params.extra_paths
+                    else None
+                ),
             )
 
             logger.info("Waiting for process completion: %s", process.pid)
@@ -472,7 +527,10 @@ def define_mcp_server(
 
             # Always return 3 TextContent items as per FDS specification
             return [
-                TextContent(type="text", text=f"**process {process.pid} end with {info.status.value} (exit code: {info.exit_code})**"),
+                TextContent(
+                    type="text",
+                    text=f"**process {process.pid} end with {info.status.value} (exit code: {info.exit_code})**",
+                ),
                 TextContent(type="text", text=f"---\nstdout:\n---\n{stdout}\n"),
                 TextContent(type="text", text=f"---\nstderr:\n---\n{stderr}\n"),
             ]
@@ -510,7 +568,9 @@ def define_mcp_server(
         except CommandExecutionError as e:
             return [TextContent(type="text", text=f"Command execution failed: {e}")]
         except Exception as e:
-            logger.error("Unexpected error during command execution: %s", e, exc_info=True)
+            logger.error(
+                "Unexpected error during command execution: %s", e, exc_info=True
+            )
             # Catch any unexpected exceptions to prevent MCP protocol stack crashes
             import traceback
 
@@ -531,7 +591,8 @@ def define_mcp_server(
             + ", ".join(allowed_commands)
         ),
         args: Optional[List[str] | str] = Field(
-            None, description="The argument list for the command. **type: list[str] | None**"
+            None,
+            description="The argument list for the command. **type: list[str] | None**",
         ),
         directory: str = Field(
             description="The working directory (absolute path) for the command."
@@ -544,7 +605,8 @@ def define_mcp_server(
             None, description="Input to pass to the command via stdin."
         ),
         envs: Optional[Dict[str, str | None]] = Field(
-            None, description="Additional environment variables for the command. None means delete the environment variable."
+            None,
+            description="Additional environment variables for the command. None means delete the environment variable.",
         ),
         encoding: str = Field(
             default_encoding, description="Character encoding for the command output."
@@ -575,7 +637,7 @@ def define_mcp_server(
             resolved_params = await resolve_start_process_params(
                 context, command, directory, args_list, envs, encoding, timeout_int
             )
-            
+
             process = await process_manager.start_process(
                 command=[resolved_params.command] + (resolved_params.args or []),
                 directory=resolved_params.directory,
@@ -585,7 +647,11 @@ def define_mcp_server(
                 envs=resolved_params.envs,
                 encoding=resolved_params.encoding,
                 labels=labels,
-                extra_paths=[ p for p in resolved_params.extra_paths ] if resolved_params.extra_paths else None,
+                extra_paths=(
+                    [p for p in resolved_params.extra_paths]
+                    if resolved_params.extra_paths
+                    else None
+                ),
             )
             return [
                 TextContent(

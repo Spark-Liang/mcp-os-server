@@ -1,23 +1,20 @@
 """测试FastMCP服务器"""
 
 import os
+import sys
 from pathlib import Path
 from typing import List, Optional
-import sys
 
 import pytest
 from mcp.server.fastmcp import Image
 
+from mcp_os_server.filesystem.filesystem_service import FilesystemService
 from mcp_os_server.filesystem.server import (
-    _do_load_image_by_pillow, 
+    _do_load_image_by_pillow,
     check_path_allowed_and_resolve_async,
     define_mcp_server,
 )
-
-
-from mcp_os_server.filesystem.filesystem_service import FilesystemService
 from mcp_os_server.filtered_fast_mcp import FilteredFastMCP
-
 
 
 def create_server(
@@ -55,41 +52,45 @@ def create_server(
     return mcp
 
 
-
 class TestPathAccessControl:
     """测试路径访问控制"""
+
 
     @pytest.mark.anyio
     async def test_check_path_allowed_absolute_path(self, temp_dir):
         """测试绝对路径的访问控制"""
         allowed_dirs = [str(temp_dir)]
-        
+
         # 允许的路径
         test_file = temp_dir / "test.txt"
         test_file.write_text("test content")
-        
-        resolved_path = await check_path_allowed_and_resolve_async(str(test_file), allowed_dirs)
+
+        resolved_path = await check_path_allowed_and_resolve_async(
+            str(test_file), allowed_dirs
+        )
         assert resolved_path == test_file.resolve()
-        
+
         # 子目录中的文件也应该被允许
         subdir = temp_dir / "subdir"
         subdir.mkdir()
         sub_file = subdir / "subfile.txt"
         sub_file.write_text("sub content")
-        
-        resolved_path = await check_path_allowed_and_resolve_async(str(sub_file), allowed_dirs)
+
+        resolved_path = await check_path_allowed_and_resolve_async(
+            str(sub_file), allowed_dirs
+        )
         assert resolved_path == sub_file.resolve()
 
     @pytest.mark.anyio
     async def test_check_path_not_allowed_outside_dirs(self, temp_dir):
         """测试不在允许目录外的路径被拒绝"""
         allowed_dirs = [str(temp_dir)]
-        
+
         # 尝试访问父目录
         parent_file = temp_dir.parent / "forbidden.txt"
         with pytest.raises(PermissionError, match="路径不在允许的目录中"):
             await check_path_allowed_and_resolve_async(str(parent_file), allowed_dirs)
-        
+
         # 尝试访问系统目录
         with pytest.raises(PermissionError, match="路径不在允许的目录中"):
             await check_path_allowed_and_resolve_async("/etc/passwd", allowed_dirs)
@@ -98,21 +99,24 @@ class TestPathAccessControl:
     async def test_check_path_relative_path(self, temp_dir):
         """测试相对路径的访问控制"""
         allowed_dirs = [str(temp_dir)]
-        
+
         # 创建测试文件
         test_file = temp_dir / "relative_test.txt"
         test_file.write_text("relative content")
-        
+
         # 改变当前工作目录到 temp_dir
         import os
+
         original_cwd = os.getcwd()
         try:
             os.chdir(temp_dir)
-            
+
             # 相对路径应该被解析为绝对路径
-            resolved_path = await check_path_allowed_and_resolve_async("relative_test.txt", allowed_dirs)
+            resolved_path = await check_path_allowed_and_resolve_async(
+                "relative_test.txt", allowed_dirs
+            )
             assert resolved_path == test_file.resolve()
-            
+
         finally:
             os.chdir(original_cwd)
 
@@ -124,24 +128,29 @@ class TestPathAccessControl:
         test_dir.mkdir()
         test_file = test_dir / "test.txt"
         test_file.write_text("test content")
-        
+
         # 改变当前工作目录到 temp_dir
         import os
+
         original_cwd = os.getcwd()
         try:
             os.chdir(temp_dir)
-            
+
             # 使用相对路径配置 allowed_dirs
             allowed_dirs = ["relative_allowed"]
-            
+
             # 应该能够访问该目录下的文件
-            resolved_path = await check_path_allowed_and_resolve_async(str(test_file), allowed_dirs)
+            resolved_path = await check_path_allowed_and_resolve_async(
+                str(test_file), allowed_dirs
+            )
             assert resolved_path == test_file.resolve()
-            
+
             # 也可以使用相对路径访问
-            resolved_path = await check_path_allowed_and_resolve_async("relative_allowed/test.txt", allowed_dirs)
+            resolved_path = await check_path_allowed_and_resolve_async(
+                "relative_allowed/test.txt", allowed_dirs
+            )
             assert resolved_path == test_file.resolve()
-            
+
         finally:
             os.chdir(original_cwd)
 
@@ -151,20 +160,22 @@ class TestPathAccessControl:
         """测试启用 Cursor 格式路径处理"""
         # 设置环境变量启用 Cursor 格式支持
         monkeypatch.setenv("SUPPORT_CURSOR_PATH_FORMAT", "true")
-        
+
         allowed_dirs = [str(temp_dir)]
-        
+
         # 获取当前盘符
         current_drive = str(temp_dir)[:2]  # 例如：'C:'
         drive_letter = current_drive[0].lower()  # 例如：'c'
-        
+
         # 创建测试文件
         test_file = temp_dir / "cursor_test.txt"
         test_file.write_text("cursor content")
-        
+
         # 测试 Cursor 格式路径应该被转换并允许访问
         cursor_path = f"/{drive_letter}:{str(temp_dir)[2:]}/cursor_test.txt"
-        resolved_path = await check_path_allowed_and_resolve_async(cursor_path, allowed_dirs)
+        resolved_path = await check_path_allowed_and_resolve_async(
+            cursor_path, allowed_dirs
+        )
         assert resolved_path == test_file.resolve()
 
     @pytest.mark.skipif(os.name != "nt", reason="Cursor 目录格式只在 Windows 上支持")
@@ -173,13 +184,13 @@ class TestPathAccessControl:
         """测试不启用 Cursor 格式路径处理"""
         # 确保环境变量不启用 Cursor 格式支持
         monkeypatch.setenv("SUPPORT_CURSOR_PATH_FORMAT", "false")
-        
+
         allowed_dirs = [str(temp_dir)]
-        
+
         # 获取当前盘符
         current_drive = str(temp_dir)[:2]  # 例如：'C:'
         drive_letter = current_drive[0].lower()  # 例如：'c'
-        
+
         # 测试 Cursor 格式路径应该被当作普通路径处理，不被允许
         cursor_path = f"/{drive_letter}:{str(temp_dir)[2:]}/test.txt"
         with pytest.raises(PermissionError, match="路径不在允许的目录中"):
@@ -193,28 +204,34 @@ class TestPathAccessControl:
         dir2 = temp_dir / "dir2"
         dir1.mkdir()
         dir2.mkdir()
-        
+
         allowed_dirs = [str(dir1), str(dir2)]
-        
+
         # 在两个目录中都创建测试文件
         file1 = dir1 / "test1.txt"
         file2 = dir2 / "test2.txt"
         file1.write_text("content1")
         file2.write_text("content2")
-        
+
         # 两个文件都应该被允许访问
-        resolved_path1 = await check_path_allowed_and_resolve_async(str(file1), allowed_dirs)
-        resolved_path2 = await check_path_allowed_and_resolve_async(str(file2), allowed_dirs)
-        
+        resolved_path1 = await check_path_allowed_and_resolve_async(
+            str(file1), allowed_dirs
+        )
+        resolved_path2 = await check_path_allowed_and_resolve_async(
+            str(file2), allowed_dirs
+        )
+
         assert resolved_path1 == file1.resolve()
         assert resolved_path2 == file2.resolve()
-        
+
         # 但不在这两个目录中的文件应该被拒绝
         forbidden_file = temp_dir / "forbidden.txt"
         forbidden_file.write_text("forbidden content")
-        
+
         with pytest.raises(PermissionError, match="路径不在允许的目录中"):
-            await check_path_allowed_and_resolve_async(str(forbidden_file), allowed_dirs)
+            await check_path_allowed_and_resolve_async(
+                str(forbidden_file), allowed_dirs
+            )
 
     @pytest.mark.anyio
     async def test_check_path_mixed_absolute_relative_dirs(self, temp_dir):
@@ -224,28 +241,33 @@ class TestPathAccessControl:
         rel_dir = temp_dir / "relative_dir"
         abs_dir.mkdir()
         rel_dir.mkdir()
-        
+
         abs_file = abs_dir / "abs_test.txt"
         rel_file = rel_dir / "rel_test.txt"
         abs_file.write_text("absolute content")
         rel_file.write_text("relative content")
-        
+
         # 改变当前工作目录到 temp_dir
         import os
+
         original_cwd = os.getcwd()
         try:
             os.chdir(temp_dir)
-            
+
             # 混合使用绝对路径和相对路径
             allowed_dirs = [str(abs_dir), "relative_dir"]
-            
+
             # 两个文件都应该能访问
-            resolved_path1 = await check_path_allowed_and_resolve_async(str(abs_file), allowed_dirs)
-            resolved_path2 = await check_path_allowed_and_resolve_async(str(rel_file), allowed_dirs)
-            
+            resolved_path1 = await check_path_allowed_and_resolve_async(
+                str(abs_file), allowed_dirs
+            )
+            resolved_path2 = await check_path_allowed_and_resolve_async(
+                str(rel_file), allowed_dirs
+            )
+
             assert resolved_path1 == abs_file.resolve()
             assert resolved_path2 == rel_file.resolve()
-            
+
         finally:
             os.chdir(original_cwd)
 
@@ -296,11 +318,11 @@ class TestImageLoading:
         """测试成功加载图片"""
         # 这里使用项目中的测试图片
         image_path = "tests/mcp_os_server/filesystem/image-for-test.png"
-        
+
         if Path(image_path).exists():
             image = _do_load_image_by_pillow(image_path)
             assert isinstance(image, Image)
-            assert hasattr(image, 'data')
+            assert hasattr(image, "data")
             assert image.data is not None
         else:
             pytest.skip("测试图片文件不存在")
@@ -308,7 +330,7 @@ class TestImageLoading:
     def test_load_image_with_size_limit(self, sample_files):
         """测试带大小限制的图片加载"""
         image_path = "tests/mcp_os_server/filesystem/image-for-test.png"
-        
+
         if Path(image_path).exists():
             # 设置一个很小的大小限制来强制创建缩略图
             max_bytes = 1000  # 1KB
@@ -327,7 +349,7 @@ class TestImageLoading:
         # 创建一个非图片文件
         invalid_file = temp_dir / "invalid_image.png"
         invalid_file.write_text("这不是图片内容")
-        
+
         with pytest.raises(Exception):  # PIL 会抛出各种异常
             _do_load_image_by_pillow(str(invalid_file))
 

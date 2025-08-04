@@ -1,33 +1,33 @@
+import json
 import os
 import re
+import socket
 import sys
 import tempfile
 import time
 from abc import ABC, abstractmethod
-from pathlib import Path
-from typing import AsyncGenerator, List, Optional, Sequence, Any, Dict
+from contextvars import ContextVar
 from datetime import datetime
-import json
+from pathlib import Path
+from typing import Any, AsyncGenerator, Dict, List, Optional, Sequence
 
 import anyio
+import httpx
 import pytest
+from anyio import create_memory_object_stream
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.types import TextContent, ListRootsResult, Root
 from mcp.shared.context import RequestContext
+from mcp.types import ListRootsResult, Root, TextContent
 from pydantic import FileUrl
 
-import httpx
-from anyio import create_memory_object_stream
-import uuid
-import socket
-from contextvars import ContextVar
 
 def get_random_available_port() -> int:
     """Gets a random available port."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("", 0))
         return sock.getsockname()[1]
+
 
 # Path to the helper script
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -111,14 +111,16 @@ def _get_server_start_params(
 
     return cmd, args
 
-async def list_roots_callback(context: RequestContext["ClientSession", Any]) -> ListRootsResult:
+
+async def list_roots_callback(
+    context: RequestContext["ClientSession", Any],
+) -> ListRootsResult:
     result = ListRootsResult(
-        roots=[
-            Root(uri=FileUrl(f"file://{PROJECT_ROOT.absolute()}"))
-        ],
-    );
+        roots=[Root(uri=FileUrl(f"file://{PROJECT_ROOT.absolute()}"))],
+    )
     print(f"list_roots_callback result: {result}", file=sys.stderr)
     return result
+
 
 # region Helper functions for validating output formats according to FDS specifications
 def validate_process_list_table(text: str) -> bool:
@@ -277,9 +279,13 @@ def validate_error_message_format(text: str, error_type: str) -> bool:
     pattern = error_patterns[error_type]
     return pattern in text
 
+
 # endregion
 
-@pytest.fixture(autouse=True) # 使用 autouse=True 让 fixture 自动应用于所有测试，无需显式传入
+
+@pytest.fixture(
+    autouse=True
+)  # 使用 autouse=True 让 fixture 自动应用于所有测试，无需显式传入
 def inject_test_name(request):
     """
     一个 fixture，将当前测试用例的名称注入到测试类的实例中。
@@ -298,12 +304,15 @@ def inject_test_name(request):
         # 对于非类中的函数测试，你可以选择跳过或采取其他操作
         print(f"\nFixture: 当前测试 '{request.node.name}' 不在类中，跳过属性注入。")
 
-    yield # fixture 的 setup 部分结束，yield 之后是 teardown 部分
+    yield  # fixture 的 setup 部分结束，yield 之后是 teardown 部分
 
     # Teardown: 你可以在这里清理注入的属性（可选）
-    if request.instance and hasattr(request.instance, 'test_name'):
-        print(f"Fixture: 清理测试类实例属性 'test_name' for '{request.instance.test_name}'")
+    if request.instance and hasattr(request.instance, "test_name"):
+        print(
+            f"Fixture: 清理测试类实例属性 'test_name' for '{request.instance.test_name}'"
+        )
         del request.instance.test_name
+
 
 @pytest.mark.parametrize(
     "process_manager_type",
@@ -327,7 +336,7 @@ class BaseCommandServerIntegrationTest(ABC):
         process_manager_type: str,
         process_retention_seconds: Optional[int] = None,
         extra_args: Optional[List[str]] = None,
-        extra_envs: Optional[Dict[ str, str| None]] = None,
+        extra_envs: Optional[Dict[str, str | None]] = None,
     ) -> AsyncGenerator[ClientSession, None]:
         """
         Abstract factory method that must be implemented by subclasses to create
@@ -379,24 +388,36 @@ class BaseCommandServerIntegrationTest(ABC):
         extra_args = []
         extra_envs = {}
 
-        extra_envs["PROJECT_COMMAND_CONFIG_FILE"] = "tests/resources/command-config-test.yaml"
-        
+        extra_envs["PROJECT_COMMAND_CONFIG_FILE"] = (
+            "tests/resources/command-config-test.yaml"
+        )
+
         # Add command-specific environment variables for testing
         extra_envs["UV_COMMAND_ENV_UV_TEST_VAR"] = "from_command_env"
         extra_envs["UV_COMMAND_ENV_UV_PRIORITY_TEST"] = "command_env_value"
         extra_envs["ECHO_COMMAND_ENV_TEST_VAR"] = "echo_command_env"
-        
+
         # 固定在 .tmp 目录下生成日志文件，因为 gitignore 会忽略 .tmp 目录
-        cleaned_test_name = re.sub(r'[^\w\d_.-]', '_', self.test_name) if self.test_name else "unknown_test"
+        cleaned_test_name = (
+            re.sub(r"[^\w\d_.-]", "_", self.test_name)
+            if self.test_name
+            else "unknown_test"
+        )
         log_file_path = PROJECT_ROOT / ".tmp" / f"mcp_os_server_{cleaned_test_name}.log"
         extra_envs["LOG_FILE_PATH"] = str(log_file_path)
         print(f"Logging to: {log_file_path}", file=sys.stderr)
-        
 
         web_port = get_random_available_port()
-        extra_args += ["--debug", "--enable-web-manager", "--web-host", "127.0.0.1", "--web-port", str(web_port)]
+        extra_args += [
+            "--debug",
+            "--enable-web-manager",
+            "--web-host",
+            "127.0.0.1",
+            "--web-port",
+            str(web_port),
+        ]
         token = self.web_port_var.set(web_port)
- 
+
         try:
             # Use the abstract factory method implemented by subclasses
             async for session in self.new_mcp_client_session(
@@ -1185,7 +1206,10 @@ class BaseCommandServerIntegrationTest(ABC):
         self, mcp_client_session_with_5_seconds_retention: ClientSession, tmp_path
     ):
         """Integration test: Verify timeout termination of unresponsive background process."""
-        print("Running test_command_execute_timeout_with_unresponsive_program...", file=sys.stderr)
+        print(
+            "Running test_command_execute_timeout_with_unresponsive_program...",
+            file=sys.stderr,
+        )
 
         # Step 1: Start a background process with loop command that won't respond quickly
         execute_result = await self.call_tool(
@@ -1280,22 +1304,27 @@ class BaseCommandServerIntegrationTest(ABC):
             web_url = f"http://127.0.0.1:{web_port}"
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.get(f"{web_url}/api/processes")
-                assert response.status_code == 200, f"Failed to list processes: {response.text}"
+                assert (
+                    response.status_code == 200
+                ), f"Failed to list processes: {response.text}"
                 processes = response.json()["data"]
                 print(f"Found {len(processes)} processes", file=sys.stderr)
 
                 assert len(processes) == 1, "Expected exactly one process"
                 process = processes[0]
-                assert process["status"] == "running", f"Unexpected status: {process['status']}"
+                assert (
+                    process["status"] == "running"
+                ), f"Unexpected status: {process['status']}"
                 pid = process["pid"]
                 print(f"Found PID: {pid}", file=sys.stderr)
 
                 # Stop the process gracefully
                 response = await client.post(
-                    f"{web_url}/api/processes/{pid}/stop",
-                    json={"force": False}
+                    f"{web_url}/api/processes/{pid}/stop", json={"force": False}
                 )
-                assert response.status_code == 200, f"Failed to stop process: {response.text}"
+                assert (
+                    response.status_code == 200
+                ), f"Failed to stop process: {response.text}"
                 print("Process stop requested", file=sys.stderr)
 
             # Wait for execute_task to complete
@@ -1306,7 +1335,9 @@ class BaseCommandServerIntegrationTest(ABC):
 
             # Validate result indicates termination
             assert len(result) == 3, f"Unexpected result length: {len(result)}"
-            assert "terminated" in result[0].text.lower(), f"Unexpected status: {result[0].text}"
+            assert (
+                "terminated" in result[0].text.lower()
+            ), f"Unexpected status: {result[0].text}"
             print("Execute task completed with terminated status", file=sys.stderr)
 
         # Verify final status via ps_detail
@@ -1329,14 +1360,16 @@ class BaseCommandServerIntegrationTest(ABC):
 
         print("✅ Integration graceful stop via HTTP test passed", file=sys.stderr)
 
-
     @pytest.mark.anyio
     @pytest.mark.timeout(30)
     async def test_command_execute_unresponsive_process_and_graceful_stop_via_http(
         self, mcp_client_session: ClientSession, tmp_path
     ):
         """Integration test: Verify graceful termination via web manager HTTP interface of a command started by execute_command tool using another coroutine."""
-        print("Running test_command_execute_unresponsive_process_and_graceful_stop_via_http...", file=sys.stderr)
+        print(
+            "Running test_command_execute_unresponsive_process_and_graceful_stop_via_http...",
+            file=sys.stderr,
+        )
 
         # Create memory stream for result
         send, receive = create_memory_object_stream(1)
@@ -1348,9 +1381,7 @@ class BaseCommandServerIntegrationTest(ABC):
                     "command_execute",
                     {
                         "command": "uv",
-                        "args": [
-                            "run", "python", "build_executable.py", "-j", "16"
-                        ],
+                        "args": ["run", "python", "build_executable.py", "-j", "16"],
                         "directory": str(PROJECT_ROOT),
                         "stdin": None,
                         "timeout": 60,  # Long timeout
@@ -1373,22 +1404,27 @@ class BaseCommandServerIntegrationTest(ABC):
             web_url = f"http://127.0.0.1:{web_port}"
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.get(f"{web_url}/api/processes")
-                assert response.status_code == 200, f"Failed to list processes: {response.text}"
+                assert (
+                    response.status_code == 200
+                ), f"Failed to list processes: {response.text}"
                 processes = response.json()["data"]
                 print(f"Found {len(processes)} processes", file=sys.stderr)
 
                 assert len(processes) == 1, "Expected exactly one process"
                 process = processes[0]
-                assert process["status"] == "running", f"Unexpected status: {process['status']}"
+                assert (
+                    process["status"] == "running"
+                ), f"Unexpected status: {process['status']}"
                 pid = process["pid"]
                 print(f"Found PID: {pid}", file=sys.stderr)
 
                 # Stop the process gracefully
                 response = await client.post(
-                    f"{web_url}/api/processes/{pid}/stop",
-                    json={"force": False}
+                    f"{web_url}/api/processes/{pid}/stop", json={"force": False}
                 )
-                assert response.status_code == 200, f"Failed to stop process: {response.text}"
+                assert (
+                    response.status_code == 200
+                ), f"Failed to stop process: {response.text}"
                 print("Process stop requested", file=sys.stderr)
 
             # Wait for execute_task to complete
@@ -1399,7 +1435,9 @@ class BaseCommandServerIntegrationTest(ABC):
 
             # Validate result indicates termination
             assert len(result) == 3, f"Unexpected result length: {len(result)}"
-            assert "terminated" in result[0].text.lower(), f"Unexpected status: {result[0].text}"
+            assert (
+                "terminated" in result[0].text.lower()
+            ), f"Unexpected status: {result[0].text}"
             print("Execute task completed with terminated status", file=sys.stderr)
 
         # Verify final status via ps_detail
@@ -1422,174 +1460,236 @@ class BaseCommandServerIntegrationTest(ABC):
 
         print("✅ Integration graceful stop via HTTP test passed", file=sys.stderr)
 
-    
     @pytest.mark.anyio
     async def test_command_env_vars_comprehensive(
         self, mcp_client_session: ClientSession, tmp_path
     ):
         """Test comprehensive <COMMAND>_ENV_<VAR> environment variable functionality."""
-        print('Running test_command_env_vars_comprehensive...', file=sys.stderr)
-        
+        print("Running test_command_env_vars_comprehensive...", file=sys.stderr)
+
         # Test 1: Basic command-specific environment variable
         result = await self.call_tool(
             mcp_client_session,
-            'command_execute',
+            "command_execute",
             {
-                'command': 'uv',
-                'args': ['run', 'python', '-c', 'import os; print(f"UV_TEST_VAR={os.getenv(\'UV_TEST_VAR\', \'NOT_SET\')}")'],
-                'directory': str(PROJECT_ROOT),
-            }
+                "command": "uv",
+                "args": [
+                    "run",
+                    "python",
+                    "-c",
+                    "import os; print(f\"UV_TEST_VAR={os.getenv('UV_TEST_VAR', 'NOT_SET')}\")",
+                ],
+                "directory": str(PROJECT_ROOT),
+            },
         )
         # Should use environment variable from server startup (UV_ENV_UV_TEST_VAR if set)
         assert len(result) >= 2
-        
+
         # Test 2: User environment variables override command-specific ones
-        user_env = {'UV_TEST_VAR': 'user_override_value'}
+        user_env = {"UV_TEST_VAR": "user_override_value"}
         result_override = await self.call_tool(
             mcp_client_session,
-            'command_execute',
+            "command_execute",
             {
-                'command': 'uv',
-                'args': ['run', 'python', '-c', 'import os; print(f"UV_TEST_VAR={os.getenv(\'UV_TEST_VAR\', \'NOT_SET\')}")'],
-                'directory': str(PROJECT_ROOT),
-                'envs': user_env,
-            }
+                "command": "uv",
+                "args": [
+                    "run",
+                    "python",
+                    "-c",
+                    "import os; print(f\"UV_TEST_VAR={os.getenv('UV_TEST_VAR', 'NOT_SET')}\")",
+                ],
+                "directory": str(PROJECT_ROOT),
+                "envs": user_env,
+            },
         )
         # Should use user-provided value
-        assert validate_command_success_format(list(result_override), 'UV_TEST_VAR=user_override_value')
-        
+        assert validate_command_success_format(
+            list(result_override), "UV_TEST_VAR=user_override_value"
+        )
+
         # Test 3: Environment variable deletion (setting to empty)
-        user_env_delete = {'UV_TEST_VAR': None}
+        user_env_delete = {"UV_TEST_VAR": None}
         result_delete = await self.call_tool(
             mcp_client_session,
-            'command_execute',
+            "command_execute",
             {
-                'command': 'uv',
-                'args': ['run', 'python', '-c', 'import os; print(f"UV_TEST_VAR={os.getenv(\'UV_TEST_VAR\', \'NOT_SET\')}")'],
-                'directory': str(PROJECT_ROOT),
-                'envs': user_env_delete,
-            }
+                "command": "uv",
+                "args": [
+                    "run",
+                    "python",
+                    "-c",
+                    "import os; print(f\"UV_TEST_VAR={os.getenv('UV_TEST_VAR', 'NOT_SET')}\")",
+                ],
+                "directory": str(PROJECT_ROOT),
+                "envs": user_env_delete,
+            },
         )
         # Should show NOT_SET when variable is deleted
-        assert validate_command_success_format(list(result_delete), 'UV_TEST_VAR=NOT_SET')
+        assert validate_command_success_format(
+            list(result_delete), "UV_TEST_VAR=NOT_SET"
+        )
 
-    @pytest.mark.anyio 
+    @pytest.mark.anyio
     async def test_project_command_config_comprehensive(
         self, mcp_client_session: ClientSession, tmp_path
     ):
         """Test comprehensive PROJECT_COMMAND_CONFIG_FILE functionality with MCP Roots protocol."""
-        print('Running test_project_command_config_comprehensive...', file=sys.stderr)
-        
+        print("Running test_project_command_config_comprehensive...", file=sys.stderr)
+
         # Test 1: Basic project environment loading from predefined uv.env
         result = await self.call_tool(
             mcp_client_session,
-            'command_execute',
+            "command_execute",
             {
-                'command': 'uv',
-                'args': ['run', 'python', '-c', 'import os; print(f"UV_PROJECT_TEST={os.getenv(\'UV_PROJECT_TEST\', \'NOT_SET\')}")'],
-                'directory': str(PROJECT_ROOT),
-            }
+                "command": "uv",
+                "args": [
+                    "run",
+                    "python",
+                    "-c",
+                    "import os; print(f\"UV_PROJECT_TEST={os.getenv('UV_PROJECT_TEST', 'NOT_SET')}\")",
+                ],
+                "directory": str(PROJECT_ROOT),
+            },
         )
-        assert validate_command_success_format(list(result), 'UV_PROJECT_TEST=from_project_env')
-        
+        assert validate_command_success_format(
+            list(result), "UV_PROJECT_TEST=from_project_env"
+        )
+
         # Test 2: Project env has higher priority than command-specific env
         result_priority = await self.call_tool(
             mcp_client_session,
-            'command_execute',
+            "command_execute",
             {
-                'command': 'uv',
-                'args': ['run', 'python', '-c', 'import os; print(f"UV_PRIORITY_TEST={os.getenv(\'UV_PRIORITY_TEST\', \'NOT_SET\')}")'],
-                'directory': str(PROJECT_ROOT),
-            }
+                "command": "uv",
+                "args": [
+                    "run",
+                    "python",
+                    "-c",
+                    "import os; print(f\"UV_PRIORITY_TEST={os.getenv('UV_PRIORITY_TEST', 'NOT_SET')}\")",
+                ],
+                "directory": str(PROJECT_ROOT),
+            },
         )
-        assert validate_command_success_format(list(result_priority), 'UV_PRIORITY_TEST=project_env_priority')
-        
+        assert validate_command_success_format(
+            list(result_priority), "UV_PRIORITY_TEST=project_env_priority"
+        )
+
         # Test 3: User envs still have highest priority
-        user_env = {'UV_PROJECT_TEST': 'user_highest_priority'}
+        user_env = {"UV_PROJECT_TEST": "user_highest_priority"}
         result_user_priority = await self.call_tool(
             mcp_client_session,
-            'command_execute',
+            "command_execute",
             {
-                'command': 'uv',
-                'args': ['run', 'python', '-c', 'import os; print(f"UV_PROJECT_TEST={os.getenv(\'UV_PROJECT_TEST\', \'NOT_SET\')}")'],
-                'directory': str(PROJECT_ROOT),
-                'envs': user_env,
-            }
+                "command": "uv",
+                "args": [
+                    "run",
+                    "python",
+                    "-c",
+                    "import os; print(f\"UV_PROJECT_TEST={os.getenv('UV_PROJECT_TEST', 'NOT_SET')}\")",
+                ],
+                "directory": str(PROJECT_ROOT),
+                "envs": user_env,
+            },
         )
-        assert validate_command_success_format(list(result_user_priority), 'UV_PROJECT_TEST=user_highest_priority')
-        
+        assert validate_command_success_format(
+            list(result_user_priority), "UV_PROJECT_TEST=user_highest_priority"
+        )
+
         # Test 4: Variable deletion through empty value in project env
         result_delete = await self.call_tool(
             mcp_client_session,
-            'command_execute',
+            "command_execute",
             {
-                'command': 'uv',
-                'args': ['run', 'python', '-c', 'import os; print(f"UV_DELETE_VAR={os.getenv(\'UV_DELETE_VAR\', \'NOT_SET\')}")'],
-                'directory': str(PROJECT_ROOT),
-            }
+                "command": "uv",
+                "args": [
+                    "run",
+                    "python",
+                    "-c",
+                    "import os; print(f\"UV_DELETE_VAR={os.getenv('UV_DELETE_VAR', 'NOT_SET')}\")",
+                ],
+                "directory": str(PROJECT_ROOT),
+            },
         )
-        assert validate_command_success_format(list(result_delete), 'UV_DELETE_VAR=NOT_SET')
+        assert validate_command_success_format(
+            list(result_delete), "UV_DELETE_VAR=NOT_SET"
+        )
 
     @pytest.mark.anyio
     async def test_env_vars_case_insensitive_command_matching(
         self, mcp_client_session: ClientSession, tmp_path
     ):
         """Test that command env file matching is case-insensitive."""
-        print('Running test_env_vars_case_insensitive_command_matching...', file=sys.stderr)
-        
+        print(
+            "Running test_env_vars_case_insensitive_command_matching...",
+            file=sys.stderr,
+        )
+
         # Test using lowercase 'uv' command should find 'uv.env' file (case-insensitive)
         result = await self.call_tool(
             mcp_client_session,
-            'command_execute',
+            "command_execute",
             {
-                'command': 'uv',
-                'args': ['run', 'python', '-c', 'import os; print(f"UV_CASE_TEST={os.getenv(\'UV_CASE_TEST\', \'NOT_SET\')}")'],
-                'directory': str(PROJECT_ROOT),
-            }
+                "command": "uv",
+                "args": [
+                    "run",
+                    "python",
+                    "-c",
+                    "import os; print(f\"UV_CASE_TEST={os.getenv('UV_CASE_TEST', 'NOT_SET')}\")",
+                ],
+                "directory": str(PROJECT_ROOT),
+            },
         )
-        assert validate_command_success_format(list(result), 'UV_CASE_TEST=case_insensitive_works')
+        assert validate_command_success_format(
+            list(result), "UV_CASE_TEST=case_insensitive_works"
+        )
 
     @pytest.mark.anyio
     async def test_env_vars_multiple_commands_verification(
         self, mcp_client_session: ClientSession, tmp_path
     ):
         """Test environment variables work correctly for multiple different commands."""
-        print('Running test_env_vars_multiple_commands_verification...', file=sys.stderr)
-        
+        print(
+            "Running test_env_vars_multiple_commands_verification...", file=sys.stderr
+        )
+
         # Test uv command with environment variables
         result_uv = await self.call_tool(
             mcp_client_session,
-            'command_execute', 
+            "command_execute",
             {
-                'command': 'uv',
-                'args': ['run', 'python', '-c', 
-                         '''
+                "command": "uv",
+                "args": [
+                    "run",
+                    "python",
+                    "-c",
+                    """
 import os
 vars_to_check = ["UV_TEST_VAR", "UV_PRIORITY_TEST", "UV_SPECIAL_CHARS"]
 for var in vars_to_check: print(f"{var}={os.getenv(var, \'NOT_SET\')}")
-                         '''
-                        ],
-                'directory': str(PROJECT_ROOT),
-            }
+                         """,
+                ],
+                "directory": str(PROJECT_ROOT),
+            },
         )
-        
+
         # Verify multiple environment variables are loaded correctly
         stdout_content = result_uv[1].text if len(result_uv) > 1 else ""
         assert "UV_TEST_VAR=" in stdout_content
-        assert "UV_PRIORITY_TEST=" in stdout_content  
+        assert "UV_PRIORITY_TEST=" in stdout_content
         assert "UV_SPECIAL_CHARS=" in stdout_content
-        
+
         # Test echo command (should have different env vars if ECHO_ENV_* are set)
         result_echo = await self.call_tool(
             mcp_client_session,
-            'command_execute',
+            "command_execute",
             {
-                'command': 'echo',
-                'args': ['$PATH'],  # Simple test to verify echo works
-                'directory': str(tmp_path),
-            }
+                "command": "echo",
+                "args": ["$PATH"],  # Simple test to verify echo works
+                "directory": str(tmp_path),
+            },
         )
         assert len(result_echo) >= 2  # Should have process status and stdout
+
 
 class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
     """Integration tests for the MCP Command Server via STDIO protocol."""
@@ -1601,7 +1701,7 @@ class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
         process_manager_type: str,
         process_retention_seconds: Optional[int] = None,
         extra_args: Optional[List[str]] = None,
-        extra_envs: Optional[Dict[ str, str| None]] = None,
+        extra_envs: Optional[Dict[str, str | None]] = None,
     ) -> AsyncGenerator[ClientSession, None]:
         """
         Factory method to create MCP client session for STDIO mode.
@@ -1618,9 +1718,11 @@ class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
 
         cmd, args = _get_server_start_params(
             server_type="command", mode="stdio", project_root=PROJECT_ROOT
-        )  
+        )
 
-        final_envs = {k:v for k,v in ({**env, **(extra_envs or {})}).items() if v is not None}
+        final_envs = {
+            k: v for k, v in ({**env, **(extra_envs or {})}).items() if v is not None
+        }
         if extra_args is not None:
             args += extra_args
 
@@ -1651,7 +1753,8 @@ class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
 
             # Create session
             session = ClientSession(
-                read, write,
+                read,
+                write,
                 list_roots_callback=list_roots_callback,
             )
             await session.__aenter__()
@@ -1689,7 +1792,10 @@ class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
             yield session  # Provide the session to the tests
 
         except Exception as e:
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Error in MCP client session setup: {e}", file=sys.stderr)
+            print(
+                f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Error in MCP client session setup: {e}",
+                file=sys.stderr,
+            )
             import traceback
 
             print(f"Full traceback: {traceback.format_exc()}", file=sys.stderr)
@@ -1701,7 +1807,10 @@ class TestCommandServerStdioIntegration(BaseCommandServerIntegrationTest):
             # Step 1: Close the session first
             if session is not None:
                 try:
-                    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Closing session...", file=sys.stderr)
+                    print(
+                        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Closing session...",
+                        file=sys.stderr,
+                    )
                     # Give any ongoing operations time to complete
                     await anyio.sleep(0.1)  # Replace asyncio.sleep with anyio.sleep
                     await session.__aexit__(None, None, None)
@@ -1737,7 +1846,7 @@ class TestCommandServerSSEIntegration(BaseCommandServerIntegrationTest):
     pass  # Simplified - skipped tests
 
 
-@pytest.mark.timeout(120)  # HTTP tests need more time for server startup and connection  
+@pytest.mark.timeout(120)  # HTTP tests need more time for server startup and connection
 class TestCommandServerStreamableHttpIntegration(BaseCommandServerIntegrationTest):
     """Integration tests for the MCP Command Server via Streamable HTTP protocol."""
 
@@ -1757,7 +1866,7 @@ class TestCommandServerStreamableHttpIntegration(BaseCommandServerIntegrationTes
 
         # Get a random port for HTTP server
         http_port = get_random_available_port()
-        
+
         # Set up environment variables for the command server
         env = os.environ.copy()
         env["PROCESS_MANAGER_TYPE"] = process_manager_type
@@ -1768,15 +1877,21 @@ class TestCommandServerStreamableHttpIntegration(BaseCommandServerIntegrationTes
         env["PYTHONIOENCODING"] = "utf-8"
 
         cmd, args = _get_server_start_params(
-            server_type="command", mode="http", project_root=PROJECT_ROOT, port=http_port
-        )  
+            server_type="command",
+            mode="http",
+            project_root=PROJECT_ROOT,
+            port=http_port,
+        )
 
-        final_envs = {k:v for k,v in ({**env, **(extra_envs or {})}).items() if v is not None}
+        final_envs = {
+            k: v for k, v in ({**env, **(extra_envs or {})}).items() if v is not None
+        }
         if extra_args is not None:
             args += extra_args
 
         print(
-            f"Starting MCP HTTP command server from project: {PROJECT_ROOT}", file=sys.stderr
+            f"Starting MCP HTTP command server from project: {PROJECT_ROOT}",
+            file=sys.stderr,
         )
         print(
             f"Environment: ALLOWED_COMMANDS={env.get('ALLOWED_COMMANDS')}",
@@ -1786,9 +1901,9 @@ class TestCommandServerStreamableHttpIntegration(BaseCommandServerIntegrationTes
         print(f"HTTP server will listen on port: {http_port}", file=sys.stderr)
 
         # Start the server process using process manager
-        from mcp_os_server.command.process_manager_anyio import AnyioProcessManager
         from mcp_os_server.command.output_manager import OutputManager
-        
+        from mcp_os_server.command.process_manager_anyio import AnyioProcessManager
+
         output_manager = OutputManager(output_storage_path=output_storage_path)
         process_manager = AnyioProcessManager(output_manager)
         await process_manager.initialize()
@@ -1805,9 +1920,12 @@ class TestCommandServerStreamableHttpIntegration(BaseCommandServerIntegrationTes
                 description="MCP HTTP Command Server for Integration Tests",
                 timeout=300,  # 5 minutes timeout
                 envs=final_envs,
-                labels=["integration-test", "http-server"]
+                labels=["integration-test", "http-server"],
             )
-            print(f"Started HTTP server process with PID: {server_process.pid}", file=sys.stderr)
+            print(
+                f"Started HTTP server process with PID: {server_process.pid}",
+                file=sys.stderr,
+            )
 
             # Wait for server to start up
             await anyio.sleep(3)
@@ -1815,23 +1933,26 @@ class TestCommandServerStreamableHttpIntegration(BaseCommandServerIntegrationTes
             # Check if server process is still running
             server_info = await server_process.get_details()
             if server_info.status.value not in ["running"]:
-                raise RuntimeError(f"HTTP server failed to start. Status: {server_info.status}")
+                raise RuntimeError(
+                    f"HTTP server failed to start. Status: {server_info.status}"
+                )
 
             print("HTTP server started successfully", file=sys.stderr)
 
             # Connect to the HTTP server using streamable http client
             server_url = f"http://127.0.0.1:{http_port}/mcp"
             print(f"Connecting to HTTP server at: {server_url}", file=sys.stderr)
-            
+
             http_context = streamablehttp_client(url=server_url)
-            
+
             # Get the streams from the HTTP client
             read, write, close_func = await http_context.__aenter__()
             print("HTTP streams established", file=sys.stderr)
 
             # Create session
             session = ClientSession(
-                read, write,
+                read,
+                write,
                 list_roots_callback=list_roots_callback,
             )
             await session.__aenter__()
@@ -1868,7 +1989,10 @@ class TestCommandServerStreamableHttpIntegration(BaseCommandServerIntegrationTes
             yield session  # Provide the session to the tests
 
         except Exception as e:
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Error in MCP HTTP client session setup: {e}", file=sys.stderr)
+            print(
+                f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Error in MCP HTTP client session setup: {e}",
+                file=sys.stderr,
+            )
             import traceback
 
             print(f"Full traceback: {traceback.format_exc()}", file=sys.stderr)
@@ -1880,7 +2004,10 @@ class TestCommandServerStreamableHttpIntegration(BaseCommandServerIntegrationTes
             # Step 1: Close the session first
             if session is not None:
                 try:
-                    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Closing HTTP session...", file=sys.stderr)
+                    print(
+                        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Closing HTTP session...",
+                        file=sys.stderr,
+                    )
                     await anyio.sleep(0.1)
                     await session.__aexit__(None, None, None)
                     print("HTTP session cleaned up successfully", file=sys.stderr)
@@ -1900,7 +2027,9 @@ class TestCommandServerStreamableHttpIntegration(BaseCommandServerIntegrationTes
             if server_process is not None:
                 try:
                     print("Stopping HTTP server process...", file=sys.stderr)
-                    await server_process.stop(force=True, reason="Integration test completed")
+                    await server_process.stop(
+                        force=True, reason="Integration test completed"
+                    )
                     await anyio.sleep(1.0)  # Give time for process to stop
                     await server_process.clean()
                     print("HTTP server process stopped successfully", file=sys.stderr)
@@ -1958,13 +2087,22 @@ class TestFilesystemServerIntegration:
 
         # Set up environment variables for the filesystem server
         env = os.environ.copy()
-        env["ALLOWED_DIRS"] = ",".join([
-            str(tmp_path), str(project_root),
-            # 相对路径测试
-            "tests/resources"
-        ])
-        cleaned_test_name = re.sub(r'[^\w\d_.-]', '_', self.test_name) if self.test_name else "unknown_test"
-        log_file_path = PROJECT_ROOT / ".tmp" / f"mcp_os_server_filesystem_{cleaned_test_name}.log"
+        env["ALLOWED_DIRS"] = ",".join(
+            [
+                str(tmp_path),
+                str(project_root),
+                # 相对路径测试
+                "tests/resources",
+            ]
+        )
+        cleaned_test_name = (
+            re.sub(r"[^\w\d_.-]", "_", self.test_name)
+            if self.test_name
+            else "unknown_test"
+        )
+        log_file_path = (
+            PROJECT_ROOT / ".tmp" / f"mcp_os_server_filesystem_{cleaned_test_name}.log"
+        )
         env["LOG_FILE_PATH"] = str(log_file_path)
         print(f"Logging to: {log_file_path}", file=sys.stderr)
         cmd, args = _get_server_start_params(
@@ -1996,10 +2134,10 @@ class TestFilesystemServerIntegration:
             print("Stdio streams established", file=sys.stderr)
 
             # Create session
-            
 
             session = ClientSession(
-                read, write,
+                read,
+                write,
                 list_roots_callback=list_roots_callback,
             )
             await session.__aenter__()
@@ -2180,7 +2318,9 @@ class TestFilesystemServerIntegration:
         print("✅ Filesystem write/read test passed", file=sys.stderr)
 
     @pytest.mark.anyio
-    async def test_get_filesystem_info(self, mcp_filesystem_client_session: ClientSession):
+    async def test_get_filesystem_info(
+        self, mcp_filesystem_client_session: ClientSession
+    ):
         """Test retrieving filesystem information including roots."""
         print("Running test_get_filesystem_info...", file=sys.stderr)
 
@@ -2202,7 +2342,9 @@ class TestFilesystemServerIntegration:
         print("✅ Filesystem info test passed", file=sys.stderr)
 
     @pytest.mark.anyio
-    async def test_read_chinese_file_relative(self, mcp_filesystem_client_session: ClientSession):
+    async def test_read_chinese_file_relative(
+        self, mcp_filesystem_client_session: ClientSession
+    ):
         """Test reading file with Chinese name and content via relative path."""
         print("Running test_read_chinese_file_relative...", file=sys.stderr)
 
@@ -2212,7 +2354,7 @@ class TestFilesystemServerIntegration:
         result = await self.call_tool(
             mcp_filesystem_client_session,
             "fs_read_text_file",
-            {"path": relative_path, "encoding": "utf-8"}
+            {"path": relative_path, "encoding": "utf-8"},
         )
 
         assert len(result) == 1
@@ -2222,19 +2364,25 @@ class TestFilesystemServerIntegration:
         print("✅ Chinese relative path read test passed", file=sys.stderr)
 
     @pytest.mark.anyio
-    async def test_inaccessible_relative_path(self, mcp_filesystem_client_session: ClientSession):
+    async def test_inaccessible_relative_path(
+        self, mcp_filesystem_client_session: ClientSession
+    ):
         """Test denial of access to inaccessible relative path."""
         print("Running test_inaccessible_relative_path...", file=sys.stderr)
 
-        inaccessible_path = "../../../../windows/system32/config/sam"  # Example system file path
+        inaccessible_path = (
+            "../../../../windows/system32/config/sam"  # Example system file path
+        )
 
-        
         result = await self.call_tool(
             mcp_filesystem_client_session,
             "fs_read_text_file",
-            {"path": inaccessible_path}
+            {"path": inaccessible_path},
         )
         assert len(result) == 1
         assert isinstance(result[0], TextContent)
-        assert "PermissionError" in result[0].text or "路径不在允许的目录中" in result[0].text
+        assert (
+            "PermissionError" in result[0].text
+            or "路径不在允许的目录中" in result[0].text
+        )
         print("✅ Inaccessible relative path denial test passed", file=sys.stderr)

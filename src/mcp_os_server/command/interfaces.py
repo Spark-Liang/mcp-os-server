@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 from abc import abstractmethod
 from datetime import datetime
+from pathlib import Path
 from typing import (
     AsyncGenerator,
     Dict,
@@ -17,7 +18,6 @@ from typing import (
     Protocol,
     runtime_checkable,
 )
-from pathlib import Path
 
 from .models import (
     MessageEntry,

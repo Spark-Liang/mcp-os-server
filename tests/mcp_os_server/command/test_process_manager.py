@@ -3,7 +3,6 @@ import sys
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime
-from pathlib import Path
 from typing import AsyncGenerator, Dict, Optional
 
 import anyio
@@ -651,8 +650,12 @@ class ProcessManagerTestBase(ABC):
         process_manager = await self.create_process_manager(mock_output_manager)
         try:
             # Start some processes
-            p1 = await process_manager.start_process(["sleep", "2"], ".", "Sleep 1", timeout=5)
-            p2 = await process_manager.start_process(["sleep", "2"], ".", "Sleep 2", timeout=5)
+            p1 = await process_manager.start_process(
+                ["sleep", "2"], ".", "Sleep 1", timeout=5
+            )
+            p2 = await process_manager.start_process(
+                ["sleep", "2"], ".", "Sleep 2", timeout=5
+            )
 
             async def list_repeatedly():
                 for _ in range(10):
@@ -749,15 +752,15 @@ class ProcessManagerTestBase(ABC):
         finally:
             await self.cleanup_process_manager(process_manager)
 
-    async def test_process_timeout_with_unresponsive_program(self, mock_output_manager: IOutputManager):
+    async def test_process_timeout_with_unresponsive_program(
+        self, mock_output_manager: IOutputManager
+    ):
         """Test that timeout forces termination of an unresponsive process."""
         process_manager = await self.create_process_manager(mock_output_manager)
         try:
             command = [
                 sys.executable,
-                os.path.join(
-                    "tests", "mcp_os_server", "command", "cmd_for_test.py"
-                ),
+                os.path.join("tests", "mcp_os_server", "command", "cmd_for_test.py"),
                 "loop",
                 "10",  # Loop for 10 seconds
             ]
@@ -820,10 +823,15 @@ class ProcessManagerTestBase(ABC):
     #     finally:
     #         await self.cleanup_process_manager(process_manager)
 
-
-    @pytest.mark.skipif(sys.platform != "win32", reason="NPM testing is specific to Windows.")
-    @pytest.mark.skipif(os.environ.get("TEST_NPM_ENABLED", "") != "true", reason="NPM tests disabled.")
-    async def test_start_process_with_npm_print_chinese(self, mock_output_manager: IOutputManager):
+    @pytest.mark.skipif(
+        sys.platform != "win32", reason="NPM testing is specific to Windows."
+    )
+    @pytest.mark.skipif(
+        os.environ.get("TEST_NPM_ENABLED", "") != "true", reason="NPM tests disabled."
+    )
+    async def test_start_process_with_npm_print_chinese(
+        self, mock_output_manager: IOutputManager
+    ):
         process_manager = await self.create_process_manager(mock_output_manager)
         try:
             msg = "中文测试"
@@ -841,13 +849,19 @@ class ProcessManagerTestBase(ABC):
 
             output_gen = process.get_output("stdout")
             output_lines = [entry.text async for entry in output_gen]
-            assert msg in ''.join(output_lines)
+            assert msg in "".join(output_lines)
         finally:
             await self.cleanup_process_manager(process_manager)
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="NPM testing is specific to Windows.")
-    @pytest.mark.skipif(os.environ.get("TEST_NPM_ENABLED", "") != "true", reason="NPM tests disabled.")
-    async def test_start_process_with_npm_infinite_loop_and_stop(self, mock_output_manager: IOutputManager):
+    @pytest.mark.skipif(
+        sys.platform != "win32", reason="NPM testing is specific to Windows."
+    )
+    @pytest.mark.skipif(
+        os.environ.get("TEST_NPM_ENABLED", "") != "true", reason="NPM tests disabled."
+    )
+    async def test_start_process_with_npm_infinite_loop_and_stop(
+        self, mock_output_manager: IOutputManager
+    ):
         process_manager = await self.create_process_manager(mock_output_manager)
         try:
             command = ["npm", "exec", "node", "--", "-e", "while(true){}"]

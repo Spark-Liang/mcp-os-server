@@ -1,7 +1,5 @@
 """核心文件系统服务类"""
 
-import anyio
-import anyio.to_thread
 import fnmatch
 import glob
 import logging
@@ -11,11 +9,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Union
 
-from .models import DirectoryItem, EditChange, FileEditResult, FileInfo, TextFileReadResult
+import anyio
+import anyio.to_thread
+
+from .models import (
+    DirectoryItem,
+    EditChange,
+    FileEditResult,
+    FileInfo,
+    TextFileReadResult,
+)
 
 logger = logging.getLogger(__name__)
 
 StrOrPath = Union[str, Path]
+
 
 class FilesystemService:
     """提供安全的文件系统操作服务"""
@@ -123,7 +131,10 @@ class FilesystemService:
         await anyio.to_thread.run_sync(_move_sync)
 
     async def search_files(
-        self, path: StrOrPath, pattern: str, exclude_patterns: Optional[List[str]] = None
+        self,
+        path: StrOrPath,
+        pattern: str,
+        exclude_patterns: Optional[List[str]] = None,
     ) -> List[str]:
         """
         搜索文件
@@ -193,14 +204,7 @@ class FilesystemService:
 
         return await anyio.to_thread.run_sync(_get_info_sync)
 
-
-    
-
-    async def read_text_file(
-            self,
-            path: StrOrPath,
-            encoding: str = "utf-8"
-        ) -> str:
+    async def read_text_file(self, path: StrOrPath, encoding: str = "utf-8") -> str:
         """
         读取文本文件内容
 
@@ -219,10 +223,8 @@ class FilesystemService:
             return await f.read()
 
     async def read_multiple_text_files(
-            self,
-            paths: List[StrOrPath],
-            encoding: str = "utf-8"
-        ) -> Dict[StrOrPath, TextFileReadResult]:
+        self, paths: List[StrOrPath], encoding: str = "utf-8"
+    ) -> Dict[StrOrPath, TextFileReadResult]:
         """
         批量读取多个文本文件
 
@@ -237,17 +239,18 @@ class FilesystemService:
         for path in paths:
             try:
                 content = await self.read_text_file(path, encoding)
-                results[path] = TextFileReadResult(success=True, content=content, error=None)
+                results[path] = TextFileReadResult(
+                    success=True, content=content, error=None
+                )
             except Exception as e:
-                results[path] = TextFileReadResult(success=False, content=None, error=str(e))
+                results[path] = TextFileReadResult(
+                    success=False, content=None, error=str(e)
+                )
         return results
 
     async def write_text_file(
-            self,
-            path: StrOrPath,
-            content: str,
-            encoding: str = "utf-8"
-        ) -> None:
+        self, path: StrOrPath, content: str, encoding: str = "utf-8"
+    ) -> None:
         """
         写入文件内容
 
@@ -264,8 +267,11 @@ class FilesystemService:
             await f.write(content)
 
     async def edit_text_file(
-        self, path: StrOrPath, edits: List[Dict[str, str]], dry_run: bool = False,
-        encoding: str = "utf-8"
+        self,
+        path: StrOrPath,
+        edits: List[Dict[str, str]],
+        dry_run: bool = False,
+        encoding: str = "utf-8",
     ) -> FileEditResult:
         """
         编辑文件内容
@@ -292,11 +298,27 @@ class FilesystemService:
             new_text = edit.get("newText", "")
             if old_text in content:
                 content = content.replace(old_text, new_text, 1)
-                changes_made.append(EditChange(old=old_text, new=new_text, applied=True, error=None))
+                changes_made.append(
+                    EditChange(old=old_text, new=new_text, applied=True, error=None)
+                )
             else:
-                changes_made.append(EditChange(old=old_text, new=new_text, applied=False, error=f"文本不存在: {old_text[:50]}..."))
+                changes_made.append(
+                    EditChange(
+                        old=old_text,
+                        new=new_text,
+                        applied=False,
+                        error=f"文本不存在: {old_text[:50]}...",
+                    )
+                )
         content_changed = content != original_content
         if not dry_run and content_changed:
-            async with await anyio.open_file(resolved_path, "w", encoding=encoding) as f:
+            async with await anyio.open_file(
+                resolved_path, "w", encoding=encoding
+            ) as f:
                 await f.write(content)
-        return FileEditResult(changes_made=changes_made, content_changed=content_changed, preview=content if dry_run else None, message=f"{'预览模式：' if dry_run else ''}应用了 {len([c for c in changes_made if c.applied])} 个变更")
+        return FileEditResult(
+            changes_made=changes_made,
+            content_changed=content_changed,
+            preview=content if dry_run else None,
+            message=f"{'预览模式：' if dry_run else ''}应用了 {len([c for c in changes_made if c.applied])} 个变更",
+        )

@@ -29,7 +29,7 @@
 *   **图片处理能力**：支持读取图片文件，并可根据大小限制自动创建缩略图，返回Image内容。
 *   **批量操作支持**：支持批量读取多个文件或图片。
 *   **文件内容编辑**：支持对文件内容进行查找替换式的编辑。
-*   **Cursor目录格式支持**：支持处理Cursor风格的路径格式（如 `/e:/Programming/Demo/project/file.txt`），自动转换为标准系统路径。
+*   **url路径格式支持**：支持处理url风格的路径格式（如 `/e:/Programming/Demo/project/file.txt`），自动转换为标准系统路径。
 *   **多种服务器模式**：支持stdio（默认）、SSE和streamable HTTP模式。
 
 ### MCP Unified Server
@@ -264,7 +264,8 @@ commands: # 命令配置
     default_encoding: utf-8 # 默认编码。优先级高于 `DEFAULT_ENCODING_<command>` 和 `DEFAULT_ENCODING`
     default_timeout: 180 # 默认超时时间。优先级高于 `DEFAULT_TIMEOUT`
     default_envs: # 默认环境变量，优先级高于 `<COMMAND>_COMMAND_ENV_<VAR>`
-      MAVEN_ARGS: 
+      MAVEN_OPTS: -Dfile.encoding=UTF-8
+      MAVEN_ARGS: -T 8 -Dmaven.test.skip=true -Ptest
     
 ```
 
@@ -275,42 +276,16 @@ MCP OS Server 的文件系统服务支持通过 `FILESYSTEM_SERVICE_FEATURES` �
 
 #### 可用特性
 
-| 特性名称                        | 描述                                                  | 示例                                    |
-| ----------------------------- | --------------------------------------------------- | ------------------------------------- |
-| `support_cursor_directory_format` | 支持Cursor目录格式路径转换，将 `/drive:/path` 格式自动转换为 `drive:/path`<br/>**⚠️ 注意：此功能仅在 Windows 系统上支持，在其他操作系统上会被忽略** | `/e:/Programming/Demo` → `e:/Programming/Demo` |
+# TODO: 添加更多特性
 
 #### 配置示例
 
 ```bash
-# 启用Cursor目录格式支持
-FILESYSTEM_SERVICE_FEATURES="support_cursor_directory_format" ALLOWED_DIRS="E:/Programming" uv --project . run mcp-os-server filesystem-server
-
 # 启用多个特性（未来可能会有更多特性）
-FILESYSTEM_SERVICE_FEATURES="support_cursor_directory_format,other_feature" ALLOWED_DIRS="E:/Programming" uv --project . run mcp-os-server unified-server
+FILESYSTEM_SERVICE_FEATURES="feature1,feature2" ALLOWED_DIRS="E:/Programming" uv --project . run mcp-os-server filesystem-server
+
 ```
 
-#### Cursor目录格式支持详情
-
-当启用 `support_cursor_directory_format` 特性时：
-
-*   **输入路径转换**：将形如 `/e:/Programming/Demo/project/file.txt` 的路径自动转换为 `e:/Programming/Demo/project/file.txt`
-*   **系统兼容性**：⚠️ **仅在 Windows 系统上生效**，在 Linux/macOS 等其他操作系统上此特性会被自动忽略
-*   **路径格式要求**：严格匹配 `/<单字母盘符>:` 格式（例如 `/c:`、`/e:`），其中盘符必须是单个字母（A-Z）
-*   **兼容性**：转换后的路径仍需符合 `ALLOWED_DIRS` 的安全检查
-*   **适用场景**：特别适用于与Cursor编辑器集成，处理其特殊的路径格式
-*   **安全性**：转换过程不会绕过现有的安全检查机制
-
-使用示例：
-
-```bash
-# 设置允许的目录和启用特性
-ALLOWED_DIRS="E:/Programming,D:/Projects" FILESYSTEM_SERVICE_FEATURES="support_cursor_directory_format" uv --project . run mcp-os-server filesystem-server
-
-# 现在可以使用Cursor格式的路径：
-# 输入: /e:/Programming/Demo/deepinsight-demo/test-results/data-preview-tablet.png
-# 自动转换为: e:/Programming/Demo/deepinsight-demo/test-results/data-preview-tablet.png
-# 然后进行路径允许性检查
-```
 
 ## API参考
 

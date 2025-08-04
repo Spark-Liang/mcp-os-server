@@ -86,7 +86,7 @@ def validate_command_success_format(
         return False
 
     # Check exit code (should be 0 for success)
-    if not (f"end with {ProcessStatus.COMPLETED.value} (exit code: 0)" in results[0].text):
+    if f"end with {ProcessStatus.COMPLETED.value} (exit code: 0)" not in results[0].text:
         return False
 
     # Check stdout format and content
@@ -118,7 +118,7 @@ def validate_command_failure_format(results: List[TextContent], exit_code: int) 
         return False
 
     # Check exit code
-    if not (f"end with {ProcessStatus.FAILED.value} (exit code: {exit_code})" in results[0].text):
+    if f"end with {ProcessStatus.FAILED.value} (exit code: {exit_code})" not in results[0].text:
         return False
 
     # Check stdout format
@@ -758,7 +758,9 @@ class TestMCPServerDefensiveProgramming:
         assert isinstance(result[2], TextContent)
         # Should handle encoding properly without errors
         # Check that we have proper exit code format, contains PID and status
-        assert f"end with {ProcessStatus.COMPLETED.value} (exit code: 0)" in result[0].text
+        assert (
+            f"end with {ProcessStatus.COMPLETED.value} (exit code: 0)" in result[0].text
+        )
         # Check that stdout format is correct and has some output
         assert result[1].text.startswith("---\nstdout:\n---\n")
         assert result[1].text.strip()  # Should have some output

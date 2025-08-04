@@ -9,8 +9,6 @@ from pydantic import BaseModel, Field
 class FileSystemServiceFeature(Enum):
     """文件系统服务功能特性枚举"""
 
-    
-
 
 class TextFileReadResult(BaseModel):
     """文本文件读取结果"""
