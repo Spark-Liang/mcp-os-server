@@ -124,6 +124,7 @@ def parse_env_vars() -> EnvVarsParseResult:
     clean_envs = {}
     command_encoding_prefix = "DEFAULT_ENCODING_"
     command_env_pattern = re.compile(r'^(.+?)_COMMAND_ENV_(.+?)$')
+    project_command_config_file = None
 
     for env_key, env_value in os.environ.items():
         if env_key.startswith(command_encoding_prefix):

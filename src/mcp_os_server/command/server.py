@@ -6,7 +6,7 @@ import urllib.parse
 from pathlib import Path
 import os
 import sys
-
+import json
 import anyio
 from mcp.server.session import ServerSession
 from mcp.server.fastmcp import FastMCP, Context
@@ -14,6 +14,8 @@ from mcp.types import TextContent
 from pydantic import Field, BaseModel
 from dotenv import dotenv_values
 import yaml
+from dataclasses import dataclass, field
+import functools
 
 from .exceptions import (
     CommandExecutionError,
@@ -64,17 +66,6 @@ async def _apply_grep_filter(log_entries, grep_pattern, grep_mode):
         return log_entries
 
 
-class ResolvedStartProcessParams(BaseModel):
-    """
-    解析后的启动进程参数
-    """
-    command: str = Field(...,description="要执行的命令")
-    args: Optional[List[str]] = Field(None,description="命令的参数列表")
-    directory: str = Field(...,description="工作目录")
-    timeout: int = Field(...,description="命令执行超时时间，单位：秒")
-    envs: Dict[str, str] = Field(...,description="启动进程时设置的环境变量")
-    encoding: str = Field(...,description="命令输出编码")
-    extra_paths: Optional[List[Path]] = Field(None,description="额外添加到 PATH 环境变量中的路径")
 
 def define_mcp_server(
     mcp: FastMCP,
@@ -111,15 +102,54 @@ def define_mcp_server(
     logger.info("Default environment variables: %s", default_envs)
     logger.info("Project command config file: %s", project_command_config_file)
 
-    class CommandConfig(BaseModel):
-        default_encoding: Optional[str] = Field(...,description="默认编码")
-        default_timeout: Optional[int] = Field(...,description="默认超时时间")
-        default_envs: Dict[str, str | None] = Field(...,description="默认环境变量")
+    @dataclass
+    class CommandConfig:
+        """Command configuration.
 
-    class ProjectCommandConfig(BaseModel):
-        extra_paths: Optional[List[Path]] = Field(...,description="额外路径")
-        commands: Dict[str, CommandConfig] = Field(...,description="命令配置")
-        
+        Fields:
+        - default_encoding: 默认编码 (Optional[str])
+        - default_timeout: 默认超时时间 (Optional[int])
+        - default_envs: 默认环境变量 (Dict[str, str | None])
+        """
+
+        default_encoding: Optional[str] = None
+        default_timeout: Optional[int] = None
+        default_envs: Dict[str, str | None] = field(default_factory=dict)
+
+    @dataclass
+    class ProjectCommandConfig:
+        """Project command configuration.
+
+        Fields:
+        - extra_paths: 额外路径 (Optional[List[Path]])
+        - commands: 命令配置 (Dict[str, CommandConfig])
+        """
+
+        extra_paths: Optional[List[Path]] = field(default_factory=list)
+        commands: Dict[str, CommandConfig] = field(default_factory=dict)
+
+
+    @dataclass
+    class ResolvedStartProcessParams:
+        """解析后的启动进程参数
+
+        Fields:
+        - command: 要执行的命令 (str)
+        - directory: 工作目录 (str)
+        - timeout: 命令执行超时时间，单位：秒 (int)
+        - envs: 启动进程时设置的环境变量 (Dict[str, str])
+        - encoding: 命令输出编码 (str)
+        - args: 命令的参数列表 (Optional[List[str]])
+        - extra_paths: 额外添加到 PATH 环境变量中的路径 (Optional[List[Path]])
+        """
+
+        command: str
+        directory: str
+        timeout: int
+        envs: Dict[str, str]
+        encoding: str
+        args: Optional[List[str]] = None
+        extra_paths: Optional[List[Path]] = None
 
     async def load_project_command_config(
         context: Context,
@@ -189,7 +219,7 @@ def define_mcp_server(
         command: str, 
         directory: str,
         args: Optional[List[str]] = None,
-        envs: Optional[Dict[str, str]] = None,
+        envs: Optional[Dict[str, str | None]] = None,
         encoding: Optional[str] = None,
         timeout: Optional[int] = None,
     ) -> ResolvedStartProcessParams:
@@ -266,7 +296,7 @@ def define_mcp_server(
         
         # Resolve environment variables with priority
         # Start with default environment variables
-        resolved_envs = default_envs.copy()
+        resolved_envs: Dict[str, str | None] = {k:v for k,v in default_envs.items()}
         
         # Add command-specific environment variables
         if command in command_env_map:
@@ -296,21 +326,73 @@ def define_mcp_server(
             args=args,
             directory=str(directory_path),
             timeout=resolved_timeout,
-            envs=resolved_envs,
+            envs={k: v for k, v in resolved_envs.items() if v is not None} if resolved_envs else {},
             encoding=resolved_encoding,
             extra_paths=project_config.extra_paths if project_config and project_config.extra_paths else None,
         )
 
+    def is_json_string_list(s):
+        """
+        判断一个字符串是否为有效的 JSON 字符串，并且解析后是一个列表。
 
+        Args:
+            s: 要检查的字符串。
 
+        Returns:
+            如果字符串是有效的 JSON 字符串且解析后是列表，则返回 True；否则返回 False。
+        """
+        try:
+            parsed_json = json.loads(s)
+            return isinstance(parsed_json, list)
+        except json.JSONDecodeError:
+            # 如果字符串不是有效的 JSON 格式，会捕获此异常
+            return False
+        except TypeError:
+            # 如果传入的不是字符串类型，也会捕获此异常
+            return False
+
+    def standardize_args(args: Optional[List[str] | str]) -> Optional[List[str]]:
+        if isinstance(args, str):
+            if is_json_string_list(args):
+                return json.loads(args)
+            else:
+                raise ValueError(f"Invalid args string!!! must be a valid JSON list with all string elements: {args}")
+        elif isinstance(args, list):
+            return args
+        else:
+            if args is None:
+                return None
+            else:
+                raise ValueError(f"Invalid args type!!! must be a list[str] or str: {args}")
+        
+    def auto_handle_exception(func):
+        """
+        自动处理异常，将异常转换为 TextContent 对象
+        
+        Args:
+            func: 要自动处理异常的函数
+            
+        Returns:
+            TextContent 对象
+        """
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            try:
+                return await func(*args, **kwargs)
+            except Exception as e:
+                logger.error("Error executing tool %s: %s", func.__name__, e, exc_info=True)
+                return TextContent(text=f"Error executing tool {func.__name__}: {str(e)}", type="text")
+        return wrapper
+    
     @mcp.tool()
+    @auto_handle_exception
     async def command_execute(
         context: Context,
         command: str = Field(
             description="The command to execute. Only allowed commands are: "
             + ", ".join(allowed_commands)
         ),
-        args: Optional[List[str]] = Field(
+        args: Optional[List[str] | str] = Field(
             None, description="The argument list for the command. **type: list[str] | None**"
         ),
         directory: str = Field(
@@ -322,8 +404,8 @@ def define_mcp_server(
         timeout: float = Field(
             default_timeout, description="Maximum execution time in seconds."
         ),
-        envs: Optional[Dict[str, str]] = Field(
-            None, description="Additional environment variables for the command."
+        envs: Optional[Dict[str, str | None]] = Field(
+            None, description="Additional environment variables for the command. None means delete the environment variable."
         ),
         encoding: str = Field(
             default_encoding,
@@ -352,10 +434,12 @@ def define_mcp_server(
         timeout_int = max(1, int(timeout)) if timeout else 15
         limit_lines_int = max(1, int(limit_lines)) if limit_lines else 500
 
+        args_list: Optional[List[str]] = standardize_args(args)
+
         try:
             # Resolve all process parameters
             resolved_params = await resolve_start_process_params(
-                context, command, directory, args, envs, encoding, timeout_int
+                context, command, directory, args_list, envs, encoding, timeout_int
             )
             
             process = await process_manager.start_process(
@@ -439,13 +523,14 @@ def define_mcp_server(
             ]
 
     @mcp.tool()
+    @auto_handle_exception
     async def command_bg_start(
         context: Context,
         command: str = Field(
             description="The command to execute. Only allowed commands are: "
             + ", ".join(allowed_commands)
         ),
-        args: Optional[List[str]] = Field(
+        args: Optional[List[str] | str] = Field(
             None, description="The argument list for the command. **type: list[str] | None**"
         ),
         directory: str = Field(
@@ -458,8 +543,8 @@ def define_mcp_server(
         stdin: Optional[str] = Field(
             None, description="Input to pass to the command via stdin."
         ),
-        envs: Optional[Dict[str, str]] = Field(
-            None, description="Additional environment variables for the command."
+        envs: Optional[Dict[str, str | None]] = Field(
+            None, description="Additional environment variables for the command. None means delete the environment variable."
         ),
         encoding: str = Field(
             default_encoding, description="Character encoding for the command output."
@@ -483,10 +568,12 @@ def define_mcp_server(
         # Convert float parameter to int for internal use
         timeout_int = max(1, int(timeout)) if timeout else 15
 
+        args_list: Optional[List[str]] = standardize_args(args)
+
         try:
             # Resolve all process parameters
             resolved_params = await resolve_start_process_params(
-                context, command, directory, args, envs, encoding, timeout_int
+                context, command, directory, args_list, envs, encoding, timeout_int
             )
             
             process = await process_manager.start_process(
@@ -513,6 +600,7 @@ def define_mcp_server(
             ]
 
     @mcp.tool()
+    @auto_handle_exception
     async def command_ps_list(
         labels: Optional[List[str]] = Field(
             None, description="Filter processes by labels."
@@ -557,6 +645,7 @@ def define_mcp_server(
         return [TextContent(type="text", text="\n".join(rows))]
 
     @mcp.tool()
+    @auto_handle_exception
     async def command_ps_stop(
         pid: str = Field(description="The ID of the process to stop."),
         force: Optional[bool] = Field(
@@ -575,6 +664,7 @@ def define_mcp_server(
             return [TextContent(type="text", text=f"Error stopping process {pid}: {e}")]
 
     @mcp.tool()
+    @auto_handle_exception
     async def command_ps_logs(
         pid: str = Field(description="The ID of the process to get output from."),
         tail: Optional[float] = Field(
@@ -759,6 +849,7 @@ def define_mcp_server(
             return [TextContent(type="text", text=f"An error occurred: {e}")]
 
     @mcp.tool()
+    @auto_handle_exception
     async def command_ps_clean(
         pids: List[str] = Field(description="A list of process IDs to clean."),
     ) -> Sequence[TextContent]:
@@ -785,6 +876,7 @@ def define_mcp_server(
             ]
 
     @mcp.tool()
+    @auto_handle_exception
     async def command_ps_detail(
         pid: str = Field(description="The ID of the process to get details for."),
     ) -> Sequence[TextContent]:

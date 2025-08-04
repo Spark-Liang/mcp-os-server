@@ -407,6 +407,9 @@ class AnyioProcess(IProcess):
 
     async def stop(self, force: bool = False, reason: Optional[str] = None) -> None:
         logger.debug("try to stop process %s with force: %s, reason: %s", self._pid, force, reason)
+        if self._status != ProcessStatus.RUNNING:
+            logger.warning("Process %s is not running, skip stop", self._pid)
+            return
         async with self._lock:
             if self._status != ProcessStatus.RUNNING:
                 raise ProcessControlError("Process is not running")
