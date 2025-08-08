@@ -195,7 +195,7 @@ async def process_manager(
 
 
 @pytest_asyncio.fixture
-async def mcp_server(process_manager: IProcessManager) -> FastMCP:
+async def mcp_server(process_manager: IProcessManager) -> AsyncGenerator[FastMCP, None]:
     """Fixture to create a FastMCP instance with defined tools."""
     mcp = FastMCP(
         title="Test MCP Command Server",
@@ -218,7 +218,7 @@ async def mcp_server(process_manager: IProcessManager) -> FastMCP:
         command_default_encoding_map={},
         default_timeout=15,
     )
-    return mcp
+    yield mcp
 
 
 class TestMCPServerBasicFunctionality:
@@ -314,13 +314,20 @@ class TestMCPServerBasicFunctionality:
         self, mcp_server, process_manager, tmp_path
     ):
         """Test listing processes when there are running processes."""
-        # Start a process
-        process = await process_manager.start_process(
-            command=[sys.executable, str(CMD_SCRIPT_PATH), "sleep", "10"],
-            directory=str(tmp_path),
-            description="listing test",
-            timeout=10,
+        # Start a process using MCP server tool
+        start_result = await mcp_server.call_tool(
+            "command_bg_start",
+            {
+                "command": sys.executable,
+                "args": [str(CMD_SCRIPT_PATH), "sleep", "10"],
+                "directory": str(tmp_path),
+                "description": "listing test",
+                "timeout": 10,
+            },
         )
+        
+        # Extract PID from start result
+        pid = validate_process_started_format(start_result[0].text)
 
         try:
             result = await mcp_server.call_tool(
@@ -335,57 +342,71 @@ class TestMCPServerBasicFunctionality:
 
             # Check that our process appears in the table
             text = result[0].text
-            assert process.pid[:8] in text
+            assert pid[:8] in text
             assert "running" in text
             assert "listing test" in text
 
         finally:
-            await process_manager.stop_process(process.pid, force=True)
+            await process_manager.stop_process(pid, force=True)
 
     @pytest.mark.anyio
     async def test_command_ps_stop_success(self, mcp_server, process_manager, tmp_path):
         """Test stopping a running process."""
-        # Start a process
-        process = await process_manager.start_process(
-            command=[sys.executable, str(CMD_SCRIPT_PATH), "sleep", "10"],
-            directory=str(tmp_path),
-            description="test stop",
-            timeout=10,
+        # Start a process using MCP server tool
+        start_result = await mcp_server.call_tool(
+            "command_bg_start",
+            {
+                "command": sys.executable,
+                "args": [str(CMD_SCRIPT_PATH), "sleep", "10"],
+                "directory": str(tmp_path),
+                "description": "test stop",
+                "timeout": 10,
+            },
         )
+        
+        # Extract PID from start result
+        pid = validate_process_started_format(start_result[0].text)
 
         # Stop the process
         result = await mcp_server.call_tool(
-            "command_ps_stop", {"pid": process.pid, "force": True}
+            "command_ps_stop", {"pid": pid, "force": True}
         )
         assert isinstance(result, list)
         assert len(result) == 1
         assert isinstance(result[0], TextContent)
-        assert validate_process_stopped_format(result[0].text, process.pid)
+        assert validate_process_stopped_format(result[0].text, pid)
 
     @pytest.mark.anyio
     async def test_command_ps_detail_success(
         self, mcp_server, process_manager, tmp_path
     ):
         """Test getting details for a running process."""
-        # Start a process
-        process = await process_manager.start_process(
-            command=[sys.executable, str(CMD_SCRIPT_PATH), "sleep", "10"],
-            directory=str(tmp_path),
-            description="detail test",
-            labels=["test", "detail"],
-            timeout=10,
+        # Start a process using MCP server tool
+        start_result = await mcp_server.call_tool(
+            "command_bg_start",
+            {
+                "command": sys.executable,
+                "args": [str(CMD_SCRIPT_PATH), "sleep", "10"],
+                "directory": str(tmp_path),
+                "description": "detail test",
+                "labels": ["test", "detail"],
+                "timeout": 10,
+            },
         )
+        
+        # Extract PID from start result
+        pid = validate_process_started_format(start_result[0].text)
 
         try:
             result = await mcp_server.call_tool(
-                "command_ps_detail", {"pid": process.pid}
+                "command_ps_detail", {"pid": pid}
             )
             assert isinstance(result, list)
             assert len(result) == 1
             assert isinstance(result[0], TextContent)
 
             # Validate markdown format
-            assert validate_process_detail_format(result[0].text, process.pid)
+            assert validate_process_detail_format(result[0].text, pid)
 
             # Check specific content
             text = result[0].text
@@ -393,26 +414,36 @@ class TestMCPServerBasicFunctionality:
             assert "test, detail" in text
 
         finally:
-            await process_manager.stop_process(process.pid, force=True)
+            await process_manager.stop_process(pid, force=True)
 
     @pytest.mark.anyio
     async def test_command_ps_logs_success(self, mcp_server, process_manager, tmp_path):
         """Test getting logs for a completed process."""
-        # Start and complete a process
+        # Start and complete a process using MCP server tool
         command_text = "test log output"
-        process = await process_manager.start_process(
-            command=[sys.executable, str(CMD_SCRIPT_PATH), "echo", command_text],
-            directory=str(tmp_path),
-            description="logging test",
-            timeout=10,
+        start_result = await mcp_server.call_tool(
+            "command_bg_start",
+            {
+                "command": sys.executable,
+                "args": [str(CMD_SCRIPT_PATH), "echo", command_text],
+                "directory": str(tmp_path),
+                "description": "logging test",
+                "timeout": 10,
+            },
         )
+        
+        # Extract PID from start result
+        pid = validate_process_started_format(start_result[0].text)
+        
+        # Wait for process to complete
+        process = await process_manager.get_process(pid)
         await process.wait_for_completion()
 
         try:
             result = await mcp_server.call_tool(
                 "command_ps_logs",
                 {
-                    "pid": process.pid,
+                    "pid": pid,
                     "with_stdout": True,
                     "with_stderr": False,
                     "tail": None,
@@ -434,7 +465,7 @@ class TestMCPServerBasicFunctionality:
 
             # First TextContent should contain process info
             process_info_text = result[0].text
-            assert f"**进程{process.pid}（状态：" in process_info_text
+            assert f"**进程{pid}（状态：" in process_info_text
             assert "命令:" in process_info_text
             assert "描述: logging test" in process_info_text
             assert "状态:" in process_info_text
@@ -445,29 +476,39 @@ class TestMCPServerBasicFunctionality:
             assert command_text in stdout_text
 
         finally:
-            await process_manager.clean_processes([process.pid])
+            await process_manager.clean_processes([pid])
 
     @pytest.mark.anyio
     async def test_command_ps_clean_success(
         self, mcp_server, process_manager, tmp_path
     ):
         """Test cleaning completed processes."""
-        # Start and complete a process
-        process = await process_manager.start_process(
-            command=[sys.executable, str(CMD_SCRIPT_PATH), "echo", "done"],
-            directory=str(tmp_path),
-            description="to be cleaned",
-            timeout=10,
+        # Start and complete a process using MCP server tool
+        start_result = await mcp_server.call_tool(
+            "command_bg_start",
+            {
+                "command": sys.executable,
+                "args": [str(CMD_SCRIPT_PATH), "echo", "done"],
+                "directory": str(tmp_path),
+                "description": "to be cleaned",
+                "timeout": 10,
+            },
         )
+        
+        # Extract PID from start result
+        pid = validate_process_started_format(start_result[0].text)
+        
+        # Wait for process to complete
+        process = await process_manager.get_process(pid)
         await process.wait_for_completion()
 
         # Clean the process
-        result = await mcp_server.call_tool("command_ps_clean", {"pids": [process.pid]})
+        result = await mcp_server.call_tool("command_ps_clean", {"pids": [pid]})
         assert isinstance(result, list)
         assert len(result) == 1
         assert isinstance(result[0], TextContent)
         assert "Successfully cleaned processes" in result[0].text
-        assert process.pid in result[0].text
+        assert pid in result[0].text
 
 
 class TestMCPServerDefensiveProgramming:
@@ -605,20 +646,30 @@ class TestMCPServerDefensiveProgramming:
         self, mcp_server, process_manager, tmp_path
     ):
         """Test getting logs when no stdout/stderr is requested."""
-        # Start and complete a process
-        process = await process_manager.start_process(
-            command=[sys.executable, str(CMD_SCRIPT_PATH), "echo", "test"],
-            directory=str(tmp_path),
-            description="no logs test",
-            timeout=10,
+        # Start and complete a process using MCP server tool
+        start_result = await mcp_server.call_tool(
+            "command_bg_start",
+            {
+                "command": sys.executable,
+                "args": [str(CMD_SCRIPT_PATH), "echo", "test"],
+                "directory": str(tmp_path),
+                "description": "no logs test",
+                "timeout": 10,
+            },
         )
+        
+        # Extract PID from start result
+        pid = validate_process_started_format(start_result[0].text)
+        
+        # Wait for process to complete
+        process = await process_manager.get_process(pid)
         await process.wait_for_completion()
 
         try:
             result = await mcp_server.call_tool(
                 "command_ps_logs",
                 {
-                    "pid": process.pid,
+                    "pid": pid,
                     "with_stdout": False,
                     "with_stderr": False,
                     "tail": None,
@@ -638,7 +689,7 @@ class TestMCPServerDefensiveProgramming:
             assert "No logs requested" in result[0].text
 
         finally:
-            await process_manager.clean_processes([process.pid])
+            await process_manager.clean_processes([pid])
 
     @pytest.mark.anyio
     async def test_command_ps_clean_empty_list(self, mcp_server):
@@ -702,13 +753,20 @@ class TestMCPServerDefensiveProgramming:
         self, mcp_server, process_manager, tmp_path
     ):
         """Test filtering processes by status."""
-        # Start a process
-        process = await process_manager.start_process(
-            command=[sys.executable, str(CMD_SCRIPT_PATH), "sleep", "5"],
-            directory=str(tmp_path),
-            description="filter test",
-            timeout=10,
+        # Start a process using MCP server tool
+        start_result = await mcp_server.call_tool(
+            "command_bg_start",
+            {
+                "command": sys.executable,
+                "args": [str(CMD_SCRIPT_PATH), "sleep", "5"],
+                "directory": str(tmp_path),
+                "description": "filter test",
+                "timeout": 10,
+            },
         )
+        
+        # Extract PID from start result
+        pid = validate_process_started_format(start_result[0].text)
 
         try:
             # Test filtering by running status
@@ -719,7 +777,7 @@ class TestMCPServerDefensiveProgramming:
             assert len(result) == 1
             assert isinstance(result[0], TextContent)
             assert validate_process_list_table(result[0].text)
-            assert process.pid[:8] in result[0].text
+            assert pid[:8] in result[0].text
 
             # Test filtering by completed status (should not include our running process)
             result = await mcp_server.call_tool(
@@ -734,7 +792,7 @@ class TestMCPServerDefensiveProgramming:
             ) or validate_error_message_format(result[0].text, "no_processes")
 
         finally:
-            await process_manager.stop_process(process.pid, force=True)
+            await process_manager.stop_process(pid, force=True)
 
     @pytest.mark.anyio
     async def test_command_execute_with_custom_encoding(self, mcp_server, tmp_path):
@@ -795,20 +853,30 @@ class TestMCPServerDefensiveProgramming:
         self, mcp_server, process_manager, tmp_path
     ):
         """Test getting logs with both stdout and stderr."""
-        # Start and complete a process that outputs to both stdout and stderr
-        process = await process_manager.start_process(
-            command=[sys.executable, str(CMD_SCRIPT_PATH), "echo", "stdout_message"],
-            directory=str(tmp_path),
-            description="stderr test",
-            timeout=10,
+        # Start and complete a process that outputs to both stdout and stderr using MCP server tool
+        start_result = await mcp_server.call_tool(
+            "command_bg_start",
+            {
+                "command": sys.executable,
+                "args": [str(CMD_SCRIPT_PATH), "echo", "stdout_message"],
+                "directory": str(tmp_path),
+                "description": "stderr test",
+                "timeout": 10,
+            },
         )
+        
+        # Extract PID from start result
+        pid = validate_process_started_format(start_result[0].text)
+        
+        # Wait for process to complete
+        process = await process_manager.get_process(pid)
         await process.wait_for_completion()
 
         try:
             result = await mcp_server.call_tool(
                 "command_ps_logs",
                 {
-                    "pid": process.pid,
+                    "pid": pid,
                     "with_stdout": True,
                     "with_stderr": True,
                     "add_time_prefix": True,
@@ -822,7 +890,7 @@ class TestMCPServerDefensiveProgramming:
 
             # First TextContent should contain process info
             process_info_text = result[0].text
-            assert f"**进程{process.pid}（状态：" in process_info_text
+            assert f"**进程{pid}（状态：" in process_info_text
             assert "描述: stderr test" in process_info_text
 
             # Second TextContent should contain stdout
@@ -831,7 +899,7 @@ class TestMCPServerDefensiveProgramming:
             assert "stdout_message" in stdout_text
 
         finally:
-            await process_manager.clean_processes([process.pid])
+            await process_manager.clean_processes([pid])
 
     @pytest.mark.anyio
     async def test_command_ps_logs_with_time_prefix_format(
@@ -839,19 +907,29 @@ class TestMCPServerDefensiveProgramming:
     ):
         """Test getting logs with custom time prefix format."""
         command_text = "time format test"
-        process = await process_manager.start_process(
-            command=[sys.executable, str(CMD_SCRIPT_PATH), "echo", command_text],
-            directory=str(tmp_path),
-            description="time format test",
-            timeout=10,
+        start_result = await mcp_server.call_tool(
+            "command_bg_start",
+            {
+                "command": sys.executable,
+                "args": [str(CMD_SCRIPT_PATH), "echo", command_text],
+                "directory": str(tmp_path),
+                "description": "time format test",
+                "timeout": 10,
+            },
         )
+        
+        # Extract PID from start result
+        pid = validate_process_started_format(start_result[0].text)
+        
+        # Wait for process to complete
+        process = await process_manager.get_process(pid)
         await process.wait_for_completion()
 
         try:
             result = await mcp_server.call_tool(
                 "command_ps_logs",
                 {
-                    "pid": process.pid,
+                    "pid": pid,
                     "with_stdout": True,
                     "with_stderr": False,
                     "add_time_prefix": True,
@@ -870,7 +948,7 @@ class TestMCPServerDefensiveProgramming:
             assert re.search(r"\[\d{2}:\d{2}:\d{2}\]", stdout_text)
 
         finally:
-            await process_manager.clean_processes([process.pid])
+            await process_manager.clean_processes([pid])
 
     @pytest.mark.anyio
     async def test_command_ps_logs_without_time_prefix(
@@ -878,19 +956,29 @@ class TestMCPServerDefensiveProgramming:
     ):
         """Test getting logs without time prefix."""
         command_text = "no time prefix test"
-        process = await process_manager.start_process(
-            command=[sys.executable, str(CMD_SCRIPT_PATH), "echo", command_text],
-            directory=str(tmp_path),
-            description="no time prefix test",
-            timeout=10,
+        start_result = await mcp_server.call_tool(
+            "command_bg_start",
+            {
+                "command": sys.executable,
+                "args": [str(CMD_SCRIPT_PATH), "echo", command_text],
+                "directory": str(tmp_path),
+                "description": "no time prefix test",
+                "timeout": 10,
+            },
         )
+        
+        # Extract PID from start result
+        pid = validate_process_started_format(start_result[0].text)
+        
+        # Wait for process to complete
+        process = await process_manager.get_process(pid)
         await process.wait_for_completion()
 
         try:
             result = await mcp_server.call_tool(
                 "command_ps_logs",
                 {
-                    "pid": process.pid,
+                    "pid": pid,
                     "with_stdout": True,
                     "with_stderr": False,
                     "add_time_prefix": False,
@@ -914,32 +1002,41 @@ class TestMCPServerDefensiveProgramming:
             assert log_content_found
 
         finally:
-            await process_manager.clean_processes([process.pid])
+            await process_manager.clean_processes([pid])
 
     @pytest.mark.anyio
     async def test_command_ps_logs_with_grep_filter(
         self, mcp_server, process_manager, tmp_path
     ):
         """Test getting logs with grep filtering."""
-        # Create a process that outputs a line containing the pattern
-        process = await process_manager.start_process(
-            command=[
-                sys.executable,
-                str(CMD_SCRIPT_PATH),
-                "echo",
-                "This line contains TEST_PATTERN for filtering",
-            ],
-            directory=str(tmp_path),
-            description="grep test",
-            timeout=10,
+        # Create a process that outputs a line containing the pattern using MCP server tool
+        start_result = await mcp_server.call_tool(
+            "command_bg_start",
+            {
+                "command": sys.executable,
+                "args": [
+                    str(CMD_SCRIPT_PATH),
+                    "echo",
+                    "This line contains TEST_PATTERN for filtering",
+                ],
+                "directory": str(tmp_path),
+                "description": "grep test",
+                "timeout": 10,
+            },
         )
+        
+        # Extract PID from start result
+        pid = validate_process_started_format(start_result[0].text)
+        
+        # Wait for process to complete
+        process = await process_manager.get_process(pid)
         await process.wait_for_completion()
 
         try:
             result = await mcp_server.call_tool(
                 "command_ps_logs",
                 {
-                    "pid": process.pid,
+                    "pid": pid,
                     "with_stdout": True,
                     "with_stderr": False,
                     "add_time_prefix": False,
@@ -957,28 +1054,38 @@ class TestMCPServerDefensiveProgramming:
             assert "This line contains TEST_PATTERN for filtering" in stdout_text
 
         finally:
-            await process_manager.clean_processes([process.pid])
+            await process_manager.clean_processes([pid])
 
     @pytest.mark.anyio
     async def test_command_ps_logs_with_limit_lines(
         self, mcp_server, process_manager, tmp_path
     ):
         """Test getting logs with line limit."""
-        # Create a process with multiple output lines
+        # Create a process with multiple output lines using MCP server tool
         long_output = "\n".join([f"line{i}" for i in range(10)])
-        process = await process_manager.start_process(
-            command=[sys.executable, str(CMD_SCRIPT_PATH), "echo", long_output],
-            directory=str(tmp_path),
-            description="limit lines test",
-            timeout=10,
+        start_result = await mcp_server.call_tool(
+            "command_bg_start",
+            {
+                "command": sys.executable,
+                "args": [str(CMD_SCRIPT_PATH), "echo", long_output],
+                "directory": str(tmp_path),
+                "description": "limit lines test",
+                "timeout": 10,
+            },
         )
+        
+        # Extract PID from start result
+        pid = validate_process_started_format(start_result[0].text)
+        
+        # Wait for process to complete
+        process = await process_manager.get_process(pid)
         await process.wait_for_completion()
 
         try:
             result = await mcp_server.call_tool(
                 "command_ps_logs",
                 {
-                    "pid": process.pid,
+                    "pid": pid,
                     "with_stdout": True,
                     "with_stderr": False,
                     "add_time_prefix": False,
@@ -995,26 +1102,36 @@ class TestMCPServerDefensiveProgramming:
             assert "line" in stdout_text
 
         finally:
-            await process_manager.clean_processes([process.pid])
+            await process_manager.clean_processes([pid])
 
     @pytest.mark.anyio
     async def test_command_ps_logs_with_tail(
         self, mcp_server, process_manager, tmp_path
     ):
         """Test getting logs with tail parameter."""
-        process = await process_manager.start_process(
-            command=[sys.executable, str(CMD_SCRIPT_PATH), "echo", "tail test"],
-            directory=str(tmp_path),
-            description="tail test",
-            timeout=10,
+        start_result = await mcp_server.call_tool(
+            "command_bg_start",
+            {
+                "command": sys.executable,
+                "args": [str(CMD_SCRIPT_PATH), "echo", "tail test"],
+                "directory": str(tmp_path),
+                "description": "tail test",
+                "timeout": 10,
+            },
         )
+        
+        # Extract PID from start result
+        pid = validate_process_started_format(start_result[0].text)
+        
+        # Wait for process to complete
+        process = await process_manager.get_process(pid)
         await process.wait_for_completion()
 
         try:
             result = await mcp_server.call_tool(
                 "command_ps_logs",
                 {
-                    "pid": process.pid,
+                    "pid": pid,
                     "with_stdout": True,
                     "with_stderr": False,
                     "tail": 5,
@@ -1030,7 +1147,7 @@ class TestMCPServerDefensiveProgramming:
             assert "tail test" in stdout_text
 
         finally:
-            await process_manager.clean_processes([process.pid])
+            await process_manager.clean_processes([pid])
 
 
 class TestMCPServerConfigurationParameters:
@@ -1179,23 +1296,33 @@ class TestMCPServerConfigurationParameters:
         self, mcp_server_with_restricted_commands, process_manager, tmp_path
     ):
         """Test that process retention works according to configuration."""
-        # Start and complete a short process
-        process = await process_manager.start_process(
-            command=[sys.executable, str(CMD_SCRIPT_PATH), "echo", "retention test"],
-            directory=str(tmp_path),
-            description="retention test",
-            timeout=10,
+        # Start and complete a short process using MCP server tool
+        start_result = await mcp_server_with_restricted_commands.call_tool(
+            "command_bg_start",
+            {
+                "command": sys.executable,
+                "args": [str(CMD_SCRIPT_PATH), "echo", "retention test"],
+                "directory": str(tmp_path),
+                "description": "retention test",
+                "timeout": 10,
+            },
         )
+        
+        # Extract PID from start result
+        pid = validate_process_started_format(start_result[0].text)
+        
+        # Wait for process to complete
+        process = await process_manager.get_process(pid)
         await process.wait_for_completion()
 
         # Process should be available immediately after completion
         result = await mcp_server_with_restricted_commands.call_tool(
-            "command_ps_detail", {"pid": process.pid}
+            "command_ps_detail", {"pid": pid}
         )
         assert isinstance(result, list)
         assert len(result) == 1
         assert isinstance(result[0], TextContent)
-        assert validate_process_detail_format(result[0].text, process.pid)
+        assert validate_process_detail_format(result[0].text, pid)
 
         # Wait for retention period (2 seconds) + buffer
 
@@ -1204,7 +1331,7 @@ class TestMCPServerConfigurationParameters:
         # Process should still be available (retention is managed by ProcessManager)
         # This test verifies the parameter is passed correctly
         result = await mcp_server_with_restricted_commands.call_tool(
-            "command_ps_detail", {"pid": process.pid}
+            "command_ps_detail", {"pid": pid}
         )
         # The result depends on ProcessManager's cleanup behavior
         # We just verify the call doesn't crash and returns valid response

@@ -65,6 +65,21 @@ async def _apply_grep_filter(log_entries, grep_pattern, grep_mode):
         # If regex is invalid, return original entries
         return log_entries
 
+LABEL_KEY_CLIENT_ID = "client_id"
+"""
+启动进程时，对应的客户端ID。
+"""
+
+
+def get_safe_client_id(context: Context) -> str:
+    """Safely get client_id from context, return '__none__' if not available (e.g., in tests)."""
+    try:
+        client_id = context.client_id
+        return client_id or "__none__"
+    except (ValueError, AttributeError):
+        # Context is not available outside of a request (e.g., in tests)
+        return "__none__"
+
 
 def define_mcp_server(
     mcp: FastMCP,
@@ -270,7 +285,7 @@ def define_mcp_server(
             timeout: The timeout for the command execution.
         """
         logger.debug(
-            "resolve_start_process_params: %s, %s, %s, %s, %s, %s",
+            "resolve_start_process_params: %s, %s, %s, %s, %s, %s, %s",
             context,
             command,
             directory,
@@ -506,12 +521,14 @@ def define_mcp_server(
                     if resolved_params.extra_paths
                     else None
                 ),
+                labels=[f"{LABEL_KEY_CLIENT_ID}:{get_safe_client_id(context)}"],
             )
 
             logger.info("Waiting for process completion: %s", process.pid)
             info = await process.wait_for_completion()
             logger.info("Process completed: %s", process.pid)
 
+            help_text = []
             try:
                 stdout_lines = [
                     entry.text async for entry in process.get_output("stdout")
@@ -519,6 +536,13 @@ def define_mcp_server(
                 stderr_lines = [
                     entry.text async for entry in process.get_output("stderr")
                 ]
+                # 如果stdout_lines的长度大于limit_lines_int，则截取最后limit_lines_int行，并且增加 help
+                if len(stdout_lines) > limit_lines_int:
+                    help_text.append(f"stdout is too long, only show the last {limit_lines_int} lines. Use `command_ps_logs` with **pid: {process.pid}** to view more stdout output.")
+                    stdout_lines = stdout_lines[-limit_lines_int:]
+                if len(stderr_lines) > limit_lines_int:
+                    help_text.append(f"stderr is too long, only show the last {limit_lines_int} lines. Use `command_ps_logs` with **pid: {process.pid}** and **with_stderr: True** to view more stderr qoutput.")
+                    stderr_lines = stderr_lines[-limit_lines_int:]
                 stdout = "\n".join(stdout_lines)
                 stderr = "\n".join(stderr_lines)
             except ProcessNotFoundError:
@@ -533,6 +557,7 @@ def define_mcp_server(
                 ),
                 TextContent(type="text", text=f"---\nstdout:\n---\n{stdout}\n"),
                 TextContent(type="text", text=f"---\nstderr:\n---\n{stderr}\n"),
+                *([TextContent(type="text", text=f"**Note: {text}**") for text in help_text] if help_text else []),
             ]
         except ProcessTimeoutError:
             # Collect partial outputs
@@ -646,7 +671,7 @@ def define_mcp_server(
                 timeout=resolved_params.timeout,
                 envs=resolved_params.envs,
                 encoding=resolved_params.encoding,
-                labels=labels,
+                labels=(labels or []) + [f"{LABEL_KEY_CLIENT_ID}:{get_safe_client_id(context)}"],
                 extra_paths=(
                     [p for p in resolved_params.extra_paths]
                     if resolved_params.extra_paths
@@ -668,6 +693,7 @@ def define_mcp_server(
     @mcp.tool()
     @auto_handle_exception
     async def command_ps_list(
+        context: Context,
         labels: Optional[List[str]] = Field(
             None, description="Filter processes by labels."
         ),
@@ -692,7 +718,7 @@ def define_mcp_server(
                 ]
 
         processes = await process_manager.list_processes(
-            status=process_status, labels=labels
+            status=process_status, labels=(labels or []) + [f"{LABEL_KEY_CLIENT_ID}:{get_safe_client_id(context)}"]
         )
         if not processes:
             return [TextContent(type="text", text="No processes found.")]
@@ -713,6 +739,7 @@ def define_mcp_server(
     @mcp.tool()
     @auto_handle_exception
     async def command_ps_stop(
+        context: Context,
         pid: str = Field(description="The ID of the process to stop."),
         force: Optional[bool] = Field(
             False, description="Whether to force stop the process (default: false)."
@@ -722,6 +749,11 @@ def define_mcp_server(
         Stops a running process.
         """
         try:
+            process = await process_manager.get_process(pid)
+            process_info = await process.get_details()
+            client_id_label = f"{LABEL_KEY_CLIENT_ID}:{get_safe_client_id(context)}"
+            if client_id_label not in (process_info.labels or []):
+                return [TextContent(type="text", text=f"Process {pid} is not owned by this client.")]
             await process_manager.stop_process(pid, force or False)
             return [TextContent(type="text", text=f"Process {pid} stopped.")]
         except ProcessNotFoundError as e:
@@ -732,6 +764,7 @@ def define_mcp_server(
     @mcp.tool()
     @auto_handle_exception
     async def command_ps_logs(
+        context: Context,
         pid: str = Field(description="The ID of the process to get output from."),
         tail: Optional[float] = Field(
             None, description="Number of lines to show from the end."
@@ -802,6 +835,9 @@ def define_mcp_server(
             # First, get process details for the header
             process = await process_manager.get_process(pid)
             process_info = await process.get_details()
+            client_id_label = f"{LABEL_KEY_CLIENT_ID}:{get_safe_client_id(context)}"
+            if client_id_label not in (process_info.labels or []):
+                return [TextContent(type="text", text=f"Process {pid} is not owned by this client.")]
 
             # Create the process info header
             command_str = " ".join(process_info.command)
@@ -917,6 +953,7 @@ def define_mcp_server(
     @mcp.tool()
     @auto_handle_exception
     async def command_ps_clean(
+        context: Context,
         pids: List[str] = Field(description="A list of process IDs to clean."),
     ) -> Sequence[TextContent]:
         """
@@ -925,6 +962,12 @@ def define_mcp_server(
         if not pids:
             return [TextContent(type="text", text="No process IDs provided.")]
         try:
+            for pid in pids:
+                process = await process_manager.get_process(pid)
+                process_info = await process.get_details()
+                client_id_label = f"{LABEL_KEY_CLIENT_ID}:{get_safe_client_id(context)}"
+                if client_id_label not in (process_info.labels or []):
+                    return [TextContent(type="text", text=f"Process {pid} is not owned by this client.")]
             results = await process_manager.clean_processes(pids)
             # Format the results into a readable string
             formatted_results = "\n".join(
@@ -944,6 +987,7 @@ def define_mcp_server(
     @mcp.tool()
     @auto_handle_exception
     async def command_ps_detail(
+        context: Context,
         pid: str = Field(description="The ID of the process to get details for."),
     ) -> Sequence[TextContent]:
         """
@@ -951,6 +995,9 @@ def define_mcp_server(
         """
         try:
             p = await process_manager.get_process_info(pid)
+            client_id_label = f"{LABEL_KEY_CLIENT_ID}:{get_safe_client_id(context)}"
+            if client_id_label not in (p.labels or []):
+                return [TextContent(type="text", text=f"Process {pid} is not owned by this client.")]
             # Format the process info into a markdown string
             duration = "N/A"
             if p.end_time and p.start_time:
