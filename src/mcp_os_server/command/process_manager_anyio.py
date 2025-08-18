@@ -569,11 +569,22 @@ class AnyioProcessManager(IProcessManager):
         if not command:
             raise CommandExecutionError("Command is empty")
 
+        logger.debug("directory: %s", directory)
+        directory_path = Path(directory)
+        if not directory_path.is_absolute():
+            directory_path = directory_path.resolve()
+        if not directory_path.exists():
+            raise CommandExecutionError(f"Directory {directory} (absolute path: {directory_path}) does not exist")
+        if not directory_path.is_dir():
+            raise CommandExecutionError(f"Directory {directory} (absolute path: {directory_path}) is not a directory")
+        directory = str(directory_path)
+        logger.debug("resolved directory: %s", directory)
+
         env = {k: v for k, v in {**(envs or {})}.items() if v is not None}
         path_env_var = env.get("PATH", os.environ.get("PATH", ""))
         if extra_paths:
             path_env_var = os.pathsep.join(
-                [path_env_var, *[str(p) for p in extra_paths]]
+                [*[str(p) for p in extra_paths], path_env_var]
             )
         env["PATH"] = path_env_var
         try:
